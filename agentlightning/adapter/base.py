@@ -5,6 +5,7 @@ from typing import Any, Callable, Generic, Sequence, TypeVar
 from opentelemetry.sdk.trace import ReadableSpan
 
 from agentlightning.types import Span
+from agentlightning.types.adapter import AdaptingSequence
 
 T_from = TypeVar("T_from")
 T_to = TypeVar("T_to")
@@ -66,17 +67,18 @@ class Adapter(Generic[T_from, T_to]):
         raise NotImplementedError("Adapter.adapt() is not implemented")
 
 
-class SequenceAdapter(Adapter[Sequence[T_from], Sequence[T_to]], Generic[T_from, T_to]):
-    """Base class for adapters that convert sequences of data from one format to another.
+class SequenceAdapter(Adapter[AdaptingSequence[T_from], AdaptingSequence[T_to]], Generic[T_from, T_to]):
+    """Base class for adapters that convert adapting sequences of data from one format to another.
 
-    This class specializes [`Adapter`][agentlightning.Adapter] for working with sequences of data.
+    This class specializes [`Adapter`][agentlightning.Adapter] for working with
+    [`AdaptingSequence`][agentlightning.AdaptingSequence] instances.
     """
 
-    def adapt(self, source: Sequence[T_from]) -> Sequence[T_to]:
-        return [self.adapt_one(item) for item in source]
+    def adapt(self, source: AdaptingSequence[T_from]) -> AdaptingSequence[T_to]:
+        return source.map(self.adapt_one)
 
     def adapt_one(self, source: T_from) -> T_to:
-        raise NotImplementedError("SequenceAdapter.adapt_one() is not implemented")
+        raise NotImplementedError("AdaptingSequenceAdapter.adapt_one() is not implemented")
 
 
 class Filter(Adapter[Sequence[T_from], Sequence[T_from]], Generic[T_from]):

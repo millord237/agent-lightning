@@ -22,9 +22,12 @@ from agentlightning.semconv import (
     LinkPydanticModel,
 )
 from agentlightning.types.adapter import (
+    AdaptingSequence,
+    AdaptingSpan,
     AgentAnnotation,
     Annotation,
     ExceptionAnnotation,
+    FromSpan,
     GeneralAnnotation,
     MessageAnnotation,
     ObjectAnnotation,
@@ -39,14 +42,14 @@ from agentlightning.utils.otel import (
     filter_and_unflatten_attributes,
 )
 
-from .base import Adapter
+from .base import Adapter, AdaptingSequenceAdapter
 
 T_SpanSequence = TypeVar("T_SpanSequence", bound=Sequence[Span])
 
 logger = logging.getLogger(__name__)
 
 
-class CurateAnnotations(Adapter[Sequence[Span], Sequence[Annotation]]):
+class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
     """Curate the annotations from the spans."""
 
     def _filter_custom_attributes(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
@@ -73,7 +76,6 @@ class CurateAnnotations(Adapter[Sequence[Span], Sequence[Annotation]]):
         primary_reward = rewards[0].value if rewards else None
         return GeneralAnnotation(
             annotation_type="general",
-            span_id=span.span_id,
             links=self.extract_links(span),
             rewards=rewards,
             primary_reward=primary_reward,
@@ -89,7 +91,6 @@ class CurateAnnotations(Adapter[Sequence[Span], Sequence[Annotation]]):
 
         return MessageAnnotation(
             annotation_type="message",
-            span_id=span.span_id,
             links=self.extract_links(span),
             message=msg_body,
         )
@@ -103,7 +104,6 @@ class CurateAnnotations(Adapter[Sequence[Span], Sequence[Annotation]]):
 
         return ObjectAnnotation(
             annotation_type="object",
-            span_id=span.span_id,
             links=self.extract_links(span),
             object=obj_value,
         )
@@ -115,7 +115,6 @@ class CurateAnnotations(Adapter[Sequence[Span], Sequence[Annotation]]):
 
         return ExceptionAnnotation(
             annotation_type="exception",
-            span_id=span.span_id,
             links=self.extract_links(span),
             type=str(exception_type),
             message=str(exception_message),
@@ -143,7 +142,6 @@ class CurateAnnotations(Adapter[Sequence[Span], Sequence[Annotation]]):
 
         return OperationAnnotation(
             annotation_type="operation",
-            span_id=span.span_id,
             links=self.extract_links(span),
             name=str(operation_name),
             input=operation_input,
@@ -207,7 +205,6 @@ class CurateAnnotations(Adapter[Sequence[Span], Sequence[Annotation]]):
         if agent_name is not None:
             return AgentAnnotation(
                 annotation_type="agent",
-                span_id=span.span_id,
                 links=self.extract_links(span),
                 id=agent_id,
                 name=agent_name,
@@ -215,26 +212,30 @@ class CurateAnnotations(Adapter[Sequence[Span], Sequence[Annotation]]):
             )
         return None
 
-    def adapt(self, source: Sequence[Span]) -> Sequence[Annotation]:
-        annotations: List[Annotation] = []
-        for span in source:
-            annotation: Optional[Annotation] = None
-            if span.name == AGL_ANNOTATION:
-                annotation = self.adapt_general(span)
-            elif span.name == AGL_MESSAGE:
-                annotation = self.adapt_message(span)
-            elif span.name == AGL_OBJECT:
-                annotation = self.adapt_object(span)
-            elif span.name == AGL_EXCEPTION:
-                annotation = self.adapt_exception(span)
-            elif span.name == AGL_OPERATION:
-                annotation = self.adapt_operation(span)
-            else:
-                # Fallback to agent annotation detection
-                annotation = self.detect_agent_annotation(span)
-            if annotation is not None:
-                annotations.append(annotation)
-        return annotations
+    def adapt_one(self, source: AdaptingSpan) -> AdaptingSpan:
+        annotation: Optional[Annotation] = None
+        if source.name == AGL_ANNOTATION:
+            annotation = self.adapt_general(source)
+        elif source.name == AGL_MESSAGE:
+            annotation = self.adapt_message(source)
+        elif source.name == AGL_OBJECT:
+            annotation = self.adapt_object(source)
+        elif source.name == AGL_EXCEPTION:
+            annotation = self.adapt_exception(source)
+        elif source.name == AGL_OPERATION:
+            annotation = self.adapt_operation(source)
+        else:
+            # Fallback to agent annotation detection
+            annotation = self.detect_agent_annotation(source)
+        if annotation is not None:
+            if source.data is not None:
+                logger.warning(
+                    "Found annotation on an adapting span with existing data; overwriting the data. "
+                    f"Current data: {source.data}, New data: {annotation}"
+                )
+            return AdaptingSpan.from_span(source, data=annotation)
+        else:
+            return source
 
 
 class SelectByAnnotation(Adapter[Tuple[T_SpanSequence, Sequence[Annotation]], T_SpanSequence]):
@@ -285,7 +286,7 @@ class SelectByAnnotation(Adapter[Tuple[T_SpanSequence, Sequence[Annotation]], T_
                 return cast(T_SpanSequence, [span for span in spans if span not in linked_spans])
 
 
-class RepairMissingLinks(Adapter[Tuple[Sequence[Span], Sequence[Annotation]], Sequence[Span]]):
+class RepairMissingLinks(Adapter[Tuple[Sequence[Annotation], Sequence[FromSpan], Sequence[Span]], Sequence[Span]]):
     """Populate missing annotation links by searching nearby spans.
 
     This adapter scans annotations and, for any annotation that has no linked spans, attempts
