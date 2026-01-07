@@ -231,6 +231,8 @@ class AdaptingSpan(Span):
 
 # Annotation-related types
 
+AnnotationType = Literal["agent", "general", "message", "object", "exception", "operation"]
+
 
 class Annotation(BaseModel):
     """An annotation is an approach to parse a span into some kind of structured attachments to another object.
@@ -240,7 +242,7 @@ class Annotation(BaseModel):
     Note that a span can be parsed in multiple ways, and annotation is just one of them.
     """
 
-    annotation_type: Literal["agent", "general", "message", "object", "exception", "operation"]
+    annotation_type: AnnotationType
     """Type of the annotation."""
 
     links: Sequence[LinkPydanticModel] = Field(default_factory=list[LinkPydanticModel])
@@ -250,7 +252,7 @@ class Annotation(BaseModel):
 class AgentAnnotation(Annotation):
     """Parsed from [OTel Agent Spans](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/)."""
 
-    annotation_type = "agent"
+    annotation_type: AnnotationType = "agent"
     """Type of the annotation."""
 
     id: Optional[str] = None
@@ -266,7 +268,7 @@ class AgentAnnotation(Annotation):
 class GeneralAnnotation(Annotation):
     """An annotation payload that is parsed from an [annotation][agentlightning.semconv.AGL_ANNOTATION] span."""
 
-    annotation_type = "general"
+    annotation_type: AnnotationType = "general"
     """Type of the annotation."""
 
     rewards: Sequence[RewardPydanticModel] = Field(default_factory=list[RewardPydanticModel])
@@ -285,7 +287,7 @@ class GeneralAnnotation(Annotation):
 class MessageAnnotation(Annotation):
     """A log message that is parsed from a [message][agentlightning.semconv.AGL_MESSAGE] span."""
 
-    annotation_type = "message"
+    annotation_type: AnnotationType = "message"
     """Type of the annotation."""
 
     message: str
@@ -295,7 +297,7 @@ class MessageAnnotation(Annotation):
 class ObjectAnnotation(Annotation):
     """An artifact that is parsed from a [object][agentlightning.semconv.AGL_OBJECT] span."""
 
-    annotation_type = "object"
+    annotation_type: AnnotationType = "object"
     """Type of the annotation."""
 
     object: Any
@@ -305,7 +307,7 @@ class ObjectAnnotation(Annotation):
 class ExceptionAnnotation(Annotation):
     """An exception that is parsed from an [exception][agentlightning.semconv.AGL_EXCEPTION] span."""
 
-    annotation_type = "exception"
+    annotation_type: AnnotationType = "exception"
     """Type of the annotation."""
 
     type: str
@@ -321,7 +323,7 @@ class ExceptionAnnotation(Annotation):
 class OperationAnnotation(Annotation):
     """An operation that is parsed from an [operation][agentlightning.semconv.AGL_OPERATION] span."""
 
-    annotation_type = "operation"
+    annotation_type: AnnotationType = "operation"
     """Type of the annotation."""
 
     name: str
