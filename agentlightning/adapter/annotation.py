@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, TypeVar, cast
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, TypeVar, cast
 
 from opentelemetry.semconv.attributes import exception_attributes
 
+from agentlightning.adapter.preprocess import default_span_order
 from agentlightning.emitter.message import get_message_value
 from agentlightning.emitter.object import get_object_value
 from agentlightning.emitter.reward import get_rewards_from_span
@@ -26,6 +27,7 @@ from agentlightning.types.adapter import (
     AdaptingSpan,
     AgentAnnotation,
     Annotation,
+    BaseAdaptingSequence,
     ExceptionAnnotation,
     FromSpan,
     GeneralAnnotation,
@@ -42,14 +44,14 @@ from agentlightning.utils.otel import (
     filter_and_unflatten_attributes,
 )
 
-from .base import Adapter, AdaptingSequenceAdapter
+from .base import Adapter, SequenceAdapter
 
 T_SpanSequence = TypeVar("T_SpanSequence", bound=Sequence[Span])
 
 logger = logging.getLogger(__name__)
 
 
-class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
+class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
     """Curate the annotations from the spans."""
 
     def _filter_custom_attributes(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
@@ -71,7 +73,7 @@ class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
             logger.error(f"Link is malformed for span {span.span_id}: {exc}")
             return []
 
-    def adapt_general(self, span: Span) -> Optional[GeneralAnnotation]:
+    def identify_general(self, span: Span) -> Optional[GeneralAnnotation]:
         rewards = get_rewards_from_span(span)
         primary_reward = rewards[0].value if rewards else None
         return GeneralAnnotation(
@@ -83,7 +85,7 @@ class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
             custom_fields=self._filter_custom_attributes(span.attributes),
         )
 
-    def adapt_message(self, span: Span) -> Optional[MessageAnnotation]:
+    def identify_message(self, span: Span) -> Optional[MessageAnnotation]:
         msg_body = get_message_value(span)
         if msg_body is None:
             logger.warning(f"Message body is missing for message span {span.span_id}")
@@ -95,7 +97,7 @@ class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
             message=msg_body,
         )
 
-    def adapt_object(self, span: Span) -> Optional[ObjectAnnotation]:
+    def identify_object(self, span: Span) -> Optional[ObjectAnnotation]:
         try:
             obj_value = get_object_value(span)
         except Exception as exc:
@@ -108,7 +110,7 @@ class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
             object=obj_value,
         )
 
-    def adapt_exception(self, span: Span) -> Optional[ExceptionAnnotation]:
+    def identify_exception(self, span: Span) -> Optional[ExceptionAnnotation]:
         exception_type = span.attributes.get(exception_attributes.EXCEPTION_TYPE, "UnknownException")
         exception_message = span.attributes.get(exception_attributes.EXCEPTION_MESSAGE, "")
         exception_stacktrace = span.attributes.get(exception_attributes.EXCEPTION_STACKTRACE, "")
@@ -121,7 +123,7 @@ class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
             stacktrace=str(exception_stacktrace),
         )
 
-    def adapt_operation(self, span: Span) -> Optional[OperationAnnotation]:
+    def identify_operation(self, span: Span) -> Optional[OperationAnnotation]:
         try:
             operation_name = span.attributes.get(LightningSpanAttributes.OPERATION_NAME.value, "UnknownOperation")
             if LightningSpanAttributes.OPERATION_INPUT.value in span.attributes:
@@ -215,15 +217,15 @@ class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
     def adapt_one(self, source: AdaptingSpan) -> AdaptingSpan:
         annotation: Optional[Annotation] = None
         if source.name == AGL_ANNOTATION:
-            annotation = self.adapt_general(source)
+            annotation = self.identify_general(source)
         elif source.name == AGL_MESSAGE:
-            annotation = self.adapt_message(source)
+            annotation = self.identify_message(source)
         elif source.name == AGL_OBJECT:
-            annotation = self.adapt_object(source)
+            annotation = self.identify_object(source)
         elif source.name == AGL_EXCEPTION:
-            annotation = self.adapt_exception(source)
+            annotation = self.identify_exception(source)
         elif source.name == AGL_OPERATION:
-            annotation = self.adapt_operation(source)
+            annotation = self.identify_operation(source)
         else:
             # Fallback to agent annotation detection
             annotation = self.detect_agent_annotation(source)
@@ -238,7 +240,7 @@ class CurateAnnotations(AdaptingSequenceAdapter[AdaptingSpan, AdaptingSpan]):
             return source
 
 
-class SelectByAnnotation(Adapter[Tuple[T_SpanSequence, Sequence[Annotation]], T_SpanSequence]):
+class SelectByAnnotation(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
     """Select the corresponding spans within the annotation sequence, as well as their linked spans
     (and subtree spans if applicable).
 
@@ -262,31 +264,26 @@ class SelectByAnnotation(Adapter[Tuple[T_SpanSequence, Sequence[Annotation]], T_
     def __init__(self, mode: Literal["include", "exclude"]) -> None:
         self.mode = mode
 
-    def _filter_linked_spans(self, source: Sequence[Span], annotation: Sequence[Annotation]) -> Iterable[Span]:
-        annotation_span_ids = set(annotation.span_id for annotation in annotation)
+    def _filter_linked_spans(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Iterable[AdaptingSpan]:
+        annotation_spans = [span for span in source if isinstance(span.data, Annotation)]
+        annotation_span_ids = set(annotation_span.span_id for annotation_span in annotation_spans)
+        annotation_links = [cast(Annotation, span.data).links for span in annotation_spans]
         for span in source:
             if span.span_id in annotation_span_ids:
                 yield span
-            elif any(check_linked_span(span, annotation.links) for annotation in annotation):
+            elif any(check_linked_span(span, links) for links in annotation_links):
                 yield span
             # ignore the current span for now
 
-    def adapt(self, source: Tuple[T_SpanSequence, Sequence[Annotation]]) -> T_SpanSequence:
-        spans, annotations = source
-        linked_spans = self._filter_linked_spans(spans, annotations)
-        if isinstance(spans, Tree):
-            if self.mode == "include":
-                return cast(T_SpanSequence, spans.retain(lambda span: span in linked_spans))
-            else:
-                return cast(T_SpanSequence, spans.prune(lambda span: span not in linked_spans))
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> BaseAdaptingSequence[AdaptingSpan]:
+        linked_spans = list(self._filter_linked_spans(source))
+        if self.mode == "include":
+            return source.retain(lambda span: span in linked_spans)
         else:
-            if self.mode == "include":
-                return cast(T_SpanSequence, list(linked_spans))
-            else:
-                return cast(T_SpanSequence, [span for span in spans if span not in linked_spans])
+            return source.prune(lambda span: span not in linked_spans)
 
 
-class RepairMissingLinks(Adapter[Tuple[Sequence[Annotation], Sequence[FromSpan], Sequence[Span]], Sequence[Span]]):
+class RepairMissingLinks(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
     """Populate missing annotation links by searching nearby spans.
 
     This adapter scans annotations and, for any annotation that has no linked spans, attempts
@@ -296,19 +293,17 @@ class RepairMissingLinks(Adapter[Tuple[Sequence[Annotation], Sequence[FromSpan],
     but failed to attach their target spans; this adapter backfills those links based on
     proximity and eligibility rules.
 
-    The annotation spans do not necessarily have to appear in the input span sequence.
-
     Args:
-        annotation_span_required:
-            If True, only attempt to fill links for annotations whose *span_id* is present
-            in the candidate span set. If False, annotations are considered
-            regardless of whether their span is in the input span sequence.
+        candidate_predicate:
+            A predicate to filter the candidate spans. If None, all spans within the candidate scope are considered.
 
         candidate_scope:
             Controls which spans are eligible as link targets:
 
             - "siblings": search only among sibling spans of the annotation span. Only applicable when input span sequence is a tree.
             - "all": search among all spans provided to the adapter.
+
+            The intersection of the candidate scope and predicate forms the candidate span set.
 
         scan_direction:
             Determines both (a) which direction the adapter searches for candidate targets
@@ -325,14 +320,38 @@ class RepairMissingLinks(Adapter[Tuple[Sequence[Annotation], Sequence[FromSpan],
 
     def __init__(
         self,
-        require_annotation_span_child: bool = True,
+        candidate_predicate: Optional[Callable[[AdaptingSpan], bool]] = None,
         candidate_scope: Literal["siblings", "all"] = "all",
         scan_direction: Literal["backward", "forward"] = "backward",
         allow_reuse_linked_spans: bool = False,
     ) -> None:
-        self.require_annotation_span_child = require_annotation_span_child
+        if candidate_predicate is not None:
+            self.candidate_predicate = candidate_predicate
+        else:
+            self.candidate_predicate = lambda _: True  # type: ignore
         self.candidate_scope = candidate_scope
         self.scan_direction = scan_direction
         self.allow_reuse_linked_spans = allow_reuse_linked_spans
 
-    def adapt(self, source: Tuple[Sequence[Span], Sequence[Annotation]]) -> Sequence[Span]: ...
+    def _search_groups(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Iterable[Sequence[AdaptingSpan]]:
+        if self.candidate_scope == "siblings":
+            if not isinstance(source, Tree):
+                raise ValueError("Candidate scope 'siblings' is only applicable to tree sequences")
+
+            def visit(node: Tree[AdaptingSpan]) -> Iterable[Sequence[AdaptingSpan]]:
+                # Each group must be siblings
+                yield [child.item for child in node.children]  # yield siblings first
+                for child in node.children:  # then yield children recursively
+                    yield from visit(child)
+
+            yield [source.item]  # yield root first
+            yield from visit(source)
+
+        elif self.candidate_scope == "all":
+            return sorted(list(source), key=lambda span: default_span_order(span))
+
+        else:
+            raise ValueError(f"Invalid candidate scope: {self.candidate_scope}")
+
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> BaseAdaptingSequence[AdaptingSpan]:
+        groups = list(self._search_groups(source))

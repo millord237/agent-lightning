@@ -22,6 +22,10 @@ T_to = TypeVar("T_to")
 logger = logging.getLogger(__name__)
 
 
+def default_span_order(span: Span) -> tuple[int, float, float]:
+    return (span.sequence_id, span.ensure_start_time(), span.ensure_end_time())
+
+
 class _TreeLikeGraph:
     """A simple directed graph implementation for span hierarchy.
 
@@ -92,7 +96,7 @@ class _TreeLikeGraph:
 
         def build_subtree(node_id: str) -> Tree[Span]:
             children = [build_subtree(child_id) for child_id in self.forward_graph.get(node_id, [])]
-            return Tree(spans_dict[node_id], children)
+            return Tree(spans_dict[node_id], sorted(children, key=lambda child: default_span_order(child.item)))
 
         if len(self.root_ids) != 1:
             raise ValueError(

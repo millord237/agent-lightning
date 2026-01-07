@@ -36,7 +36,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-class AdaptingSequence(Sequence[T], Generic[T]):
+class BaseAdaptingSequence(Sequence[T], Generic[T]):
     """Interface that makes adapter easier to work with sequences."""
 
     @overload
@@ -58,18 +58,18 @@ class AdaptingSequence(Sequence[T], Generic[T]):
         """Get the index-th item in the sequence."""
         raise NotImplementedError()
 
-    def map(self, func: Callable[[T], V]) -> AdaptingSequence[V]:
+    def map(self, func: Callable[[T], V]) -> BaseAdaptingSequence[V]:
         """Map a function over all items in the sequence."""
         raise NotImplementedError()
 
-    def retain(self, predicate: Callable[[T], bool]) -> AdaptingSequence[T]:
+    def retain(self, predicate: Callable[[T], bool]) -> BaseAdaptingSequence[T]:
         """Filter items in the sequence by a predicate (true for items to be kept).
 
         Depending on the implementation, the returned sequence may contain more or less items than a standard filter.
         """
         raise NotImplementedError()
 
-    def prune(self, predicate: Callable[[T], bool]) -> AdaptingSequence[T]:
+    def prune(self, predicate: Callable[[T], bool]) -> BaseAdaptingSequence[T]:
         """Prune items in the sequence by a predicate (true for items to be pruned).
 
         Depending on the implementation, the returned sequence may contain more or less items than a standard prune.
@@ -88,12 +88,20 @@ class AdaptingSequence(Sequence[T], Generic[T]):
 # General containers
 
 
-class Tree(AdaptingSequence[T], Generic[T]):
+class Tree(BaseAdaptingSequence[T], Generic[T]):
     """This is a generic tree data structure that can be used to represent the structure of a tree."""
 
     def __init__(self, item: T, children: MutableSequence[Tree[T]]) -> None:
         self._item = item
         self._children = children
+
+    @property
+    def item(self) -> T:
+        return self._item
+
+    @property
+    def children(self) -> Sequence[Tree[T]]:
+        return self._children
 
     def traverse(self) -> Iterable[T]:
         yield self._item
@@ -168,7 +176,7 @@ class Tree(AdaptingSequence[T], Generic[T]):
         dot.render(filename, format="png", cleanup=True)  # type: ignore
 
 
-class SimpleList(AdaptingSequence[T], Generic[T]):
+class AdaptingSequence(BaseAdaptingSequence[T], Generic[T]):
     """A simple list implementation of AdaptingSequence."""
 
     def __init__(self, items: Sequence[T]) -> None:
@@ -183,14 +191,14 @@ class SimpleList(AdaptingSequence[T], Generic[T]):
     def size(self) -> int:
         return len(self._items)
 
-    def map(self, func: Callable[[T], V]) -> SimpleList[V]:
-        return SimpleList([func(item) for item in self._items])
+    def map(self, func: Callable[[T], V]) -> AdaptingSequence[V]:
+        return AdaptingSequence([func(item) for item in self._items])
 
-    def retain(self, predicate: Callable[[T], bool]) -> SimpleList[T]:
-        return SimpleList([item for item in self._items if predicate(item)])
+    def retain(self, predicate: Callable[[T], bool]) -> AdaptingSequence[T]:
+        return AdaptingSequence([item for item in self._items if predicate(item)])
 
-    def prune(self, predicate: Callable[[T], bool]) -> SimpleList[T]:
-        return SimpleList([item for item in self._items if not predicate(item)])
+    def prune(self, predicate: Callable[[T], bool]) -> AdaptingSequence[T]:
+        return AdaptingSequence([item for item in self._items if not predicate(item)])
 
 
 class AdaptingSpan(Span):
