@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, TypeVar, cast
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Sequence, TypeVar, cast
 
 from opentelemetry.semconv.attributes import exception_attributes
 
@@ -23,13 +23,11 @@ from agentlightning.semconv import (
     LinkPydanticModel,
 )
 from agentlightning.types.adapter import (
-    AdaptingSequence,
     AdaptingSpan,
     AgentAnnotation,
     Annotation,
     BaseAdaptingSequence,
     ExceptionAnnotation,
-    FromSpan,
     GeneralAnnotation,
     MessageAnnotation,
     ObjectAnnotation,
@@ -44,7 +42,7 @@ from agentlightning.utils.otel import (
     filter_and_unflatten_attributes,
 )
 
-from .base import Adapter, SequenceAdapter
+from .base import SequenceAdapter
 
 T_SpanSequence = TypeVar("T_SpanSequence", bound=Sequence[Span])
 
@@ -328,7 +326,7 @@ class RepairMissingLinks(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         if candidate_predicate is not None:
             self.candidate_predicate = candidate_predicate
         else:
-            self.candidate_predicate = lambda _: True  # type: ignore
+            self.candidate_predicate: Callable[[AdaptingSpan], bool] = lambda _: True
         self.candidate_scope = candidate_scope
         self.scan_direction = scan_direction
         self.allow_reuse_linked_spans = allow_reuse_linked_spans
@@ -355,3 +353,40 @@ class RepairMissingLinks(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
 
     def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> BaseAdaptingSequence[AdaptingSpan]:
         groups = list(self._search_groups(source))
+        span_id_to_link: Dict[str, LinkPydanticModel] = {}
+        for group in groups:
+            if self.scan_direction == "backward":
+                group_to_scan = reversed(group)
+            else:
+                group_to_scan = group
+
+            annotations_to_fill: List[AdaptingSpan] = []
+            for span in group_to_scan:
+                if isinstance(span.data, Annotation):
+                    if not span.data.links:
+                        annotations_to_fill.append(span)
+                    # The span is an annotation, skip it from being a candidate
+                else:
+                    # The span is a candidate
+                    if self.candidate_predicate(span):
+                        while len(annotations_to_fill) > 0:
+                            # Fill the link
+                            annotation_span = annotations_to_fill.pop(-1)
+                            span_id_to_link[annotation_span.span_id] = LinkPydanticModel(
+                                key_match="span_id", value_match=span.span_id
+                            )
+
+                            if not self.allow_reuse_linked_spans:
+                                # Once used, the candidate span cannot be reused
+                                break
+                        # If no annotations to fill, the candidate is wasted
+                    # Otherwise, the span is not a candidate, skip it
+
+        def _update_links(span: AdaptingSpan) -> AdaptingSpan:
+            if span.span_id in span_id_to_link and isinstance(span.data, Annotation):
+                new_annotation = span.data.model_copy(update={"links": [span_id_to_link[span.span_id]]})
+                return span.model_copy(update={"data": new_annotation})
+            else:
+                return span
+
+        return source.map(_update_links)
