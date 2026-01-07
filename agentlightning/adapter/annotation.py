@@ -228,12 +228,7 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             # Fallback to agent annotation detection
             annotation = self.detect_agent_annotation(source)
         if annotation is not None:
-            if source.data is not None:
-                logger.warning(
-                    "Found annotation on an adapting span with existing data; overwriting the data. "
-                    f"Current data: {source.data}, New data: {annotation}"
-                )
-            return AdaptingSpan.from_span(source, data=annotation)
+            return source.with_data(annotation)
         else:
             return source
 

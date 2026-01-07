@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeGuard, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, TypeGuard, Union, cast
 
 from openai.types.chat import (
     ChatCompletion,
@@ -13,16 +13,23 @@ from openai.types.chat import (
     ChatCompletionMessageParam,
     CompletionCreateParams,
 )
-from pydantic.type_adapter import TypeAdapter
+from pydantic import TypeAdapter
 
-from agentlightning.types.adapter import AnnotatedChatCompletionCall, Annotation, ChatCompletionCall, Tree
+from agentlightning.types.adapter import (
+    AdaptingSpan,
+    AnnotatedChatCompletionCall,
+    Annotation,
+    BaseAdaptingSequence,
+    ChatCompletionCall,
+    Tree,
+)
 from agentlightning.types.tracer import Span
-from agentlightning.utils.otel import filter_and_unflatten_attributes
+from agentlightning.utils.otel import filter_and_unflatten_attributes, query_linked_spans
 
-from .base import Adapter
+from .base import SequenceAdapter
 
 
-class IdentifyChatCompletionCalls(Adapter[Sequence[Span], Sequence[ChatCompletionCall]]):
+class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
     """Curate the chat completion calls from the spans."""
 
     def _validate_metadata(self, metadata: Any) -> TypeGuard[Dict[str, Any]]:
@@ -54,13 +61,12 @@ class IdentifyChatCompletionCalls(Adapter[Sequence[Span], Sequence[ChatCompletio
             return ChatCompletionMessageFunctionToolCall.model_validate(tool_call_data)
         return None
 
-    def _parse_openai_chat_completion_create(self, span: Union[Span, Tree[Span]]) -> ChatCompletionCall:
-        core_content = span.attributes if isinstance(span, Span) else span.item.attributes
-        prompt_messages = filter_and_unflatten_attributes(core_content, "gen_ai.prompt")
-        request_metadata = filter_and_unflatten_attributes(core_content, "gen_ai.request")
-        completion_choices = filter_and_unflatten_attributes(core_content, "gen_ai.completion")
-        usages = filter_and_unflatten_attributes(core_content, "gen_ai.usage")
-        response_metadata = filter_and_unflatten_attributes(core_content, "gen_ai.response")
+    def _parse_openai_chat_completion_create(self, span: AdaptingSpan) -> ChatCompletionCall:
+        prompt_messages = filter_and_unflatten_attributes(span.attributes, "gen_ai.prompt")
+        request_metadata = filter_and_unflatten_attributes(span.attributes, "gen_ai.request")
+        completion_choices = filter_and_unflatten_attributes(span.attributes, "gen_ai.completion")
+        usages = filter_and_unflatten_attributes(span.attributes, "gen_ai.usage")
+        response_metadata = filter_and_unflatten_attributes(span.attributes, "gen_ai.response")
 
         if not self._validate_metadata(request_metadata):
             raise ValueError(f"Invalid request metadata format in span attributes: {request_metadata}")
@@ -77,11 +83,11 @@ class IdentifyChatCompletionCalls(Adapter[Sequence[Span], Sequence[ChatCompletio
             TypeAdapter(CompletionCreateParams).validate_python({"messages": prompt_messages, **request_metadata}),
         )
 
-        if isinstance(span, Tree):
+        if isinstance(span.container, Tree):
             # Get additional tool calls from child spans
             additional_tool_calls: List[ChatCompletionMessageFunctionToolCall] = []
-            for child in span.children:
-                tool_call = self._parse_agentops_tool_calls(child.item)
+            for child in span.children():
+                tool_call = self._parse_agentops_tool_calls(child)
                 if tool_call is not None:
                     additional_tool_calls.append(tool_call)
 
@@ -111,12 +117,20 @@ class IdentifyChatCompletionCalls(Adapter[Sequence[Span], Sequence[ChatCompletio
 
     def _parse_litellm_request(self, span: Union[Span, Tree[Span]]) -> ChatCompletionCall: ...
 
-    def adapt(self, source: Sequence[Span]) -> Sequence[ChatCompletionCall]: ...
+    def adapt_one(self, source: AdaptingSpan) -> AdaptingSpan:
+        if source.name == "openai.chat.completion.create" or source.name == "openai.chat.completion":
+            chat_completion_call = self._parse_openai_chat_completion_create(source)
+            return source.with_data(chat_completion_call)
+        elif source.name == "raw_gen_ai_request":
+            # Litellm request span
+            chat_completion_call = self._parse_litellm_request(source)
+            return source.with_data(chat_completion_call)
+        else:
+            # Not a chat completion call span. Do nothing
+            return source
 
 
-class AnnotateChatCompletionCalls(
-    Adapter[Tuple[Sequence[ChatCompletionCall], Sequence[Annotation]], Sequence[AnnotatedChatCompletionCall]]
-):
+class AnnotateChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
     """Annotate chat completion calls with the given annotations.
 
     The intersection of "effective radius" of annotations and chat completion calls is used to determine
@@ -125,7 +139,39 @@ class AnnotateChatCompletionCalls(
     If an annotation is not linked to any span, try to use `RepairMissingLinks` first to link it to spans.
     """
 
-    def adapt(
-        self,
-        source: Tuple[Sequence[ChatCompletionCall], Sequence[Annotation]],
-    ) -> Sequence[AnnotatedChatCompletionCall]: ...
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> BaseAdaptingSequence[AdaptingSpan]:
+        annotation_spans = [span for span in source if isinstance(span.data, Annotation)]
+        span_id_to_updated_annotation: Dict[str, AnnotatedChatCompletionCall] = {}
+        for annotation_span in annotation_spans:
+            annotation = cast(Annotation, annotation_span.data)
+            for linked_span in query_linked_spans(source, annotation.links):
+                if isinstance(linked_span.container, Tree):
+                    linked_spans = list(linked_span.container.traverse())
+                else:
+                    linked_spans = [linked_span]
+
+                for linked_span in linked_spans:
+                    if isinstance(linked_span.data, ChatCompletionCall):
+                        existing_annotations: List[Annotation] = (
+                            list(linked_span.data.annotations)
+                            if isinstance(linked_span.data, AnnotatedChatCompletionCall)
+                            else []
+                        )
+                        # Annotate the chat completion call
+                        annotated_call = AnnotatedChatCompletionCall(
+                            request=linked_span.data.request,
+                            response=linked_span.data.response,
+                            malformed_fields=linked_span.data.malformed_fields,
+                            annotations=existing_annotations + [annotation],
+                        )
+                        # Update the linked span with the annotated call
+                        span_id_to_updated_annotation[linked_span.span_id] = annotated_call
+
+        def _update_span(span: AdaptingSpan) -> AdaptingSpan:
+            if span.span_id in span_id_to_updated_annotation:
+                annotated_call = span_id_to_updated_annotation[span.span_id]
+                return span.with_data(annotated_call, override="silent")  # override is expected here
+            else:
+                return span
+
+        return source.map(_update_span)

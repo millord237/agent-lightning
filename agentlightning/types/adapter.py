@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+import weakref
 from typing import (
     Any,
     Callable,
@@ -12,7 +14,6 @@ from typing import (
     Iterable,
     Iterator,
     Literal,
-    MutableSequence,
     Optional,
     Sequence,
     TypeVar,
@@ -34,6 +35,8 @@ from .tracer import Attributes, Span
 
 T = TypeVar("T")
 V = TypeVar("V")
+
+logger = logging.getLogger(__name__)
 
 
 class BaseAdaptingSequence(Sequence[T], Generic[T]):
@@ -89,11 +92,17 @@ class BaseAdaptingSequence(Sequence[T], Generic[T]):
 
 
 class Tree(BaseAdaptingSequence[T], Generic[T]):
-    """This is a generic tree data structure that can be used to represent the structure of a tree."""
+    """This is a generic tree data structure that can be used to represent the structure of a tree.
 
-    def __init__(self, item: T, children: MutableSequence[Tree[T]]) -> None:
+    This data structure is immutable.
+    """
+
+    def __init__(self, item: T, children: Sequence[Tree[T]]) -> None:
         self._item = item
         self._children = children
+        self._parent: Optional[weakref.ReferenceType[Tree[T]]] = None
+        for child in self._children:
+            child._parent = weakref.ref(self)  # type: ignore
 
     @property
     def item(self) -> T:
@@ -102,6 +111,10 @@ class Tree(BaseAdaptingSequence[T], Generic[T]):
     @property
     def children(self) -> Sequence[Tree[T]]:
         return self._children
+
+    @property
+    def parent(self) -> Optional[Tree[T]]:
+        return self._parent() if self._parent is not None else None
 
     def traverse(self) -> Iterable[T]:
         yield self._item
@@ -117,9 +130,6 @@ class Tree(BaseAdaptingSequence[T], Generic[T]):
         I think this is not efficient, but it's seldomly used.
         """
         return list(self.traverse())[index]
-
-    def add(self, child: Tree[T]) -> None:
-        self._children.append(child)
 
     def map(self, func: Callable[[T], V]) -> Tree[V]:
         """Map a function over all items in the tree."""
@@ -211,6 +221,32 @@ class AdaptingSpan(Span):
     data: Any
     """The data in the adapted format. Could be annotations, calls, or other structured data."""
 
+    container: Optional[BaseAdaptingSequence[AdaptingSpan]] = None
+    """An optional container that holds multiple adapted data items."""
+
+    def with_data(self, data: Any, override: Literal["silent", "warning", "forbidden"] = "warning") -> AdaptingSpan:
+        """Create a new [`AdaptingSpan`][agentlightning.AdaptingSpan] with the same properties but different adapted data.
+
+        Args:
+            data: The new adapted data.
+
+        Returns:
+            An instance of [`AdaptingSpan`][agentlightning.AdaptingSpan] with the same properties as
+            the current span but with the provided adapted data.
+        """
+        if self.data is not None:
+            if override == "forbidden":
+                raise ValueError(
+                    "Overwriting existing data on AdaptingSpan is forbidden. "
+                    f"Current data: {self.data}, New data: {data}"
+                )
+            elif override == "warning":
+                logger.warning(
+                    "Found annotation on an adapting span with existing data; overwriting the data. "
+                    f"Current data: {self.data}, New data: {data}"
+                )
+        return self.model_copy(update={"data": data})
+
     @classmethod
     def from_span(cls, span: Span, data: Any) -> AdaptingSpan:
         """Create an [`AdaptingSpan`][agentlightning.AdaptingSpan] from a base [`Span`][agentlightning.Span].
@@ -227,6 +263,25 @@ class AdaptingSpan(Span):
             return span.model_copy(update={"data": data})
         else:
             return AdaptingSpan.model_validate(span.model_dump()).model_copy(update={"data": data})
+
+    def children(self) -> Sequence[AdaptingSpan]:
+        """Get the child spans as [`AdaptingSpan`][agentlightning.AdaptingSpan] instances.
+
+        Only applicable when the container is a [`Tree`][agentlightning.Tree].
+        """
+        if self.container is None or not isinstance(self.container, Tree):
+            raise ValueError("AdaptingSpan.children() is only applicable when container is non-empty and a Tree.")
+        return [child.item for child in self.container.children]
+
+    def parent_span(self) -> Optional[AdaptingSpan]:
+        """Get the parent span if available.
+
+        Only applicable when the container is a [`Tree`][agentlightning.Tree].
+        """
+        if self.container is None or not isinstance(self.container, Tree):
+            raise ValueError("AdaptingSpan.parent() is only applicable when container is non-empty and a Tree.")
+        parent_tree = self.container.parent
+        return parent_tree.item if parent_tree is not None else None
 
 
 # Annotation-related types
