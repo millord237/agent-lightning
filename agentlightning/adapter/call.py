@@ -12,7 +12,7 @@ from agentlightning.types.tracer import Span
 from .base import Adapter
 
 
-class CurateChatCompletionCalls(Adapter[Sequence[Span], Sequence[ChatCompletionCall]]):
+class IdentifyChatCompletionCalls(Adapter[Sequence[Span], Sequence[ChatCompletionCall]]):
     """Curate the chat completion calls from the spans."""
 
     def _parse_openai_chat_completion_create(self, span: Union[Span, Tree[Span]]) -> ChatCompletionCall: ...

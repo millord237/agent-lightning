@@ -5,7 +5,7 @@ from typing import Any, Callable, Generic, Sequence, TypeVar
 from opentelemetry.sdk.trace import ReadableSpan
 
 from agentlightning.types import Span
-from agentlightning.types.adapter import AdaptingSequence, BaseAdaptingSequence
+from agentlightning.types.adapter import BaseAdaptingSequence
 
 T_from = TypeVar("T_from")
 T_to = TypeVar("T_to")
