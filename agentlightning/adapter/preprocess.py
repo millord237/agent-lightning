@@ -10,11 +10,11 @@ from collections import defaultdict
 from typing import Dict, List, Literal, Sequence, Set, Tuple, TypeVar
 
 from agentlightning.semconv import AGL_VIRTUAL
-from agentlightning.types.adapter import Tree
+from agentlightning.types.adapter import AdaptingSequence, AdaptingSpan, Tree
 from agentlightning.types.tracer import Span, SpanLike
 from agentlightning.utils.id import generate_id
 
-from .base import Adapter, SequenceAdapter, Sort
+from .base import Adapter, SequenceAdapter
 
 T_from = TypeVar("T_from")
 T_to = TypeVar("T_to")
@@ -318,49 +318,38 @@ class ToTree(Adapter[Sequence[Span], Tree[Span]]):
         return _TreeLikeGraph.from_spans(source).to_tree(source)
 
 
-class ToSortedSpans(Sort[Span]):
-    """Sort the spans with sequence ID as the primary key and start time as the secondary key."""
+class ToAdaptingSpans(Adapter[Sequence[Span], AdaptingSequence[AdaptingSpan]]):
+    """Sort the spans with sequence ID as the primary key and start time as the secondary key
+    and end time as the tertiary key."""
 
-    def __init__(self) -> None:
-        super().__init__(key=lambda span: (span.sequence_id, span.start_time))
+    def adapt(self, source: Sequence[Span]) -> AdaptingSequence[AdaptingSpan]:
+        sorted_spans = sorted(source, key=default_span_order)
+        return AdaptingSequence([AdaptingSpan.from_span(span, None) for span in sorted_spans])
 
 
-class RepairTime(Adapter[Sequence[Span], Sequence[Span]]):
-    """Repair the end time of the spans by:
+class RepairMalformedSpans(Adapter[Sequence[Span], Sequence[Span]]):
+    """The adapter repairs multiple common issues with spans.
 
-    1. Ensuring the end time is greater than the start time.
-    2. Fill the spans with no end time to be the maximum start/end time of all spans.
+    1. Repair the end time of the spans by:
+
+       * Ensuring the end time is greater than the start time.
+       * Fill the spans with no end time to be the maximum start/end time of all spans.
+
+    2. Repair the parent ID. If a span has a parent ID that does not exist in the set of spans,
+       the parent ID will be set to None.
     """
 
-    def __init__(self, ensure_positive_duration: bool = True, ensure_proper_nesting: bool = True) -> None:
+    def __init__(
+        self,
+        ensure_positive_duration: bool = True,
+        ensure_proper_nesting: bool = True,
+        ensure_valid_parent_ids: bool = True,
+    ) -> None:
         self.ensure_positive_duration = ensure_positive_duration
         self.ensure_proper_nesting = ensure_proper_nesting
+        self.ensure_valid_parent_ids = ensure_valid_parent_ids
 
-    def _repair_nesting(self, source: Sequence[Span]) -> Sequence[Span]:
-        graph = _TreeLikeGraph.from_spans(source, logs_invalid_parent=False)
-        spans = {span.span_id: span for span in source}
-
-        def visit(node_id: str) -> Tuple[float, float]:
-            child_start_end_times: List[Tuple[float, float]] = []
-            cur_start_time = spans[node_id].ensure_start_time()
-            cur_end_time = spans[node_id].ensure_end_time()
-            if graph.forward_graph.get(node_id):
-                for child_id in graph.forward_graph[node_id]:
-                    child_start_end_times.append(visit(child_id))
-                start_times, end_times = zip(*child_start_end_times)
-                start_time = min(cur_start_time, *start_times)
-                end_time = max(cur_end_time, *end_times)
-                if start_time != cur_start_time or end_time != cur_end_time:
-                    spans[node_id] = spans[node_id].model_copy(update={"start_time": start_time, "end_time": end_time})
-
-            return spans[node_id].ensure_start_time(), spans[node_id].ensure_end_time()
-
-        for root_id in graph.root_ids:
-            visit(root_id)
-
-        return [spans[span.span_id] for span in source]
-
-    def adapt(self, source: Sequence[Span]) -> Sequence[Span]:
+    def _repair_start_end_time(self, source: Sequence[Span]) -> List[Span]:
         times_set = set[float]()
         for span in source:
             if span.start_time is not None:
@@ -394,7 +383,49 @@ class RepairTime(Adapter[Sequence[Span], Sequence[Span]]):
             else:
                 new_spans.append(span)
 
+        return new_spans
+
+    def _repair_nesting(self, source: Sequence[Span]) -> List[Span]:
+        graph = _TreeLikeGraph.from_spans(source, logs_invalid_parent=False)
+        spans = {span.span_id: span for span in source}
+
+        def visit(node_id: str) -> Tuple[float, float]:
+            child_start_end_times: List[Tuple[float, float]] = []
+            cur_start_time = spans[node_id].ensure_start_time()
+            cur_end_time = spans[node_id].ensure_end_time()
+            if graph.forward_graph.get(node_id):
+                for child_id in graph.forward_graph[node_id]:
+                    child_start_end_times.append(visit(child_id))
+                start_times, end_times = zip(*child_start_end_times)
+                start_time = min(cur_start_time, *start_times)
+                end_time = max(cur_end_time, *end_times)
+                if start_time != cur_start_time or end_time != cur_end_time:
+                    spans[node_id] = spans[node_id].model_copy(update={"start_time": start_time, "end_time": end_time})
+
+            return spans[node_id].ensure_start_time(), spans[node_id].ensure_end_time()
+
+        for root_id in graph.root_ids:
+            visit(root_id)
+
+        return [spans[span.span_id] for span in source]
+
+    def _repair_invalid_parent_ids(self, source: Sequence[Span]) -> List[Span]:
+        valid_span_ids: Set[str] = set(span.span_id for span in source)
+        new_spans: List[Span] = []
+
+        for span in source:
+            if span.parent_id is not None and span.parent_id not in valid_span_ids:
+                new_spans.append(span.model_copy(update={"parent_id": None, "parent": None}))
+            else:
+                new_spans.append(span)
+
+        return new_spans
+
+    def adapt(self, source: Sequence[Span]) -> Sequence[Span]:
+        # This step is always performed first no matter whether the flags are set.
+        new_spans = self._repair_start_end_time(source)
         if self.ensure_proper_nesting:
-            return self._repair_nesting(new_spans)
-        else:
-            return new_spans
+            new_spans = self._repair_nesting(new_spans)
+        if self.ensure_valid_parent_ids:
+            new_spans = self._repair_invalid_parent_ids(new_spans)
+        return new_spans

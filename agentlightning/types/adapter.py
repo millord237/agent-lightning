@@ -33,46 +33,47 @@ from agentlightning.semconv import LinkPydanticModel, RewardPydanticModel
 
 from .tracer import Attributes, Span
 
+T_co = TypeVar("T_co", covariant=True)
 T = TypeVar("T")
 V = TypeVar("V")
 
 logger = logging.getLogger(__name__)
 
 
-class BaseAdaptingSequence(Sequence[T], Generic[T]):
+class BaseAdaptingSequence(Sequence[T_co], Generic[T_co]):
     """Interface that makes adapter easier to work with sequences."""
 
     @overload
-    def __getitem__(self, index: int) -> T: ...
+    def __getitem__(self, index: int) -> T_co: ...
 
     @overload
-    def __getitem__(self, index: slice) -> Sequence[T]: ...
+    def __getitem__(self, index: slice) -> Sequence[T_co]: ...
 
-    def __getitem__(self, index: Union[int, slice]) -> Union[T, Sequence[T]]:
+    def __getitem__(self, index: Union[int, slice]) -> Union[T_co, Sequence[T_co]]:
         return self.get(index)
 
-    def __iter__(self) -> Iterator[T]:
+    def __iter__(self) -> Iterator[T_co]:
         return iter(self.traverse())
 
     def __len__(self) -> int:
         return self.size()
 
-    def get(self, index: Union[int, slice]) -> Union[T, Sequence[T]]:
+    def get(self, index: Union[int, slice]) -> Union[T_co, Sequence[T_co]]:
         """Get the index-th item in the sequence."""
         raise NotImplementedError()
 
-    def map(self, func: Callable[[T], V]) -> BaseAdaptingSequence[V]:
+    def map(self, func: Callable[[T_co], V]) -> BaseAdaptingSequence[V]:
         """Map a function over all items in the sequence."""
         raise NotImplementedError()
 
-    def retain(self, predicate: Callable[[T], bool]) -> BaseAdaptingSequence[T]:
+    def retain(self, predicate: Callable[[T_co], bool]) -> BaseAdaptingSequence[T_co]:
         """Filter items in the sequence by a predicate (true for items to be kept).
 
         Depending on the implementation, the returned sequence may contain more or less items than a standard filter.
         """
         raise NotImplementedError()
 
-    def prune(self, predicate: Callable[[T], bool]) -> BaseAdaptingSequence[T]:
+    def prune(self, predicate: Callable[[T_co], bool]) -> BaseAdaptingSequence[T_co]:
         """Prune items in the sequence by a predicate (true for items to be pruned).
 
         Depending on the implementation, the returned sequence may contain more or less items than a standard prune.
@@ -83,7 +84,7 @@ class BaseAdaptingSequence(Sequence[T], Generic[T]):
         """Get the size of the sequence."""
         raise NotImplementedError()
 
-    def traverse(self) -> Iterable[T]:
+    def traverse(self) -> Iterable[T_co]:
         """Traverse all items in the sequence."""
         raise NotImplementedError()
 
