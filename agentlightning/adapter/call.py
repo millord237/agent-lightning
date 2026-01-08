@@ -4,13 +4,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, TypeGuard, Union, cast
+import ast
+from typing import Any, Dict, List, Optional, cast
 
 from openai.types.chat import (
     ChatCompletion,
-    ChatCompletionFunctionToolParam,
     ChatCompletionMessageFunctionToolCall,
-    ChatCompletionMessageParam,
     CompletionCreateParams,
 )
 from pydantic import TypeAdapter
@@ -32,20 +31,44 @@ from .base import SequenceAdapter
 class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
     """Curate the chat completion calls from the spans."""
 
-    def _validate_metadata(self, metadata: Any) -> TypeGuard[Dict[str, Any]]:
-        if not isinstance(metadata, dict) or not all(isinstance(key, str) for key in metadata.keys()):  # type: ignore
-            return False
-        return True
+    def _parse_request(self, span: AdaptingSpan) -> Dict[str, Any]:
+        request = filter_and_unflatten_attributes(span.attributes, "gen_ai.request")
+        if not isinstance(request, dict):
+            raise ValueError(f"Invalid request format in span attributes: {request}")
+        return request
 
-    def _validate_completion(self, completion: Any) -> TypeGuard[List[Dict[str, Any]]]:
-        if not isinstance(completion, list):
-            return False
-        for choice in cast(List[Any], completion):
+    def _parse_response(self, span: AdaptingSpan) -> Dict[str, Any]:
+        response = filter_and_unflatten_attributes(span.attributes, "gen_ai.response")
+        if not isinstance(response, dict):
+            raise ValueError(f"Invalid response format in span attributes: {response}")
+        return response
+
+    def _parse_completion_choices(self, span: AdaptingSpan) -> List[Dict[str, Any]]:
+        completion_choices = filter_and_unflatten_attributes(span.attributes, "gen_ai.completion")
+        if not isinstance(completion_choices, list):
+            raise ValueError(f"Invalid completion choices format in span attributes: {completion_choices}")
+        for choice in completion_choices:
             if not isinstance(choice, dict):
-                return False
+                raise ValueError(
+                    f"Invalid completion choice format in span attributes. Choice must be a dict: {choice}"
+                )
             if "message" not in choice or not isinstance(choice["message"], dict):
-                return False
-        return True
+                raise ValueError(
+                    f"Invalid completion choice format in span attributes. Choice must contain a 'message' dict: {choice}"
+                )
+        return completion_choices
+
+    def _parse_prompt_messages(self, span: AdaptingSpan) -> List[Dict[str, Any]]:
+        prompt_messages = filter_and_unflatten_attributes(span.attributes, "gen_ai.prompt")
+        if not isinstance(prompt_messages, list) or not all(isinstance(msg, dict) for msg in prompt_messages):
+            raise ValueError(f"Invalid prompt messages format in span attributes: {prompt_messages}")
+        return prompt_messages
+
+    def _parse_usages(self, span: AdaptingSpan) -> Dict[str, Any]:
+        usages = filter_and_unflatten_attributes(span.attributes, "gen_ai.usage")
+        if not isinstance(usages, dict):
+            raise ValueError(f"Invalid usages format in span attributes: {usages}")
+        return usages
 
     def _parse_agentops_tool_calls(self, span: Span) -> Optional[ChatCompletionMessageFunctionToolCall]:
         if span.name.startswith("tool_call."):
@@ -62,21 +85,11 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         return None
 
     def _parse_openai_chat_completion_create(self, span: AdaptingSpan) -> ChatCompletionCall:
-        prompt_messages = filter_and_unflatten_attributes(span.attributes, "gen_ai.prompt")
-        request_metadata = filter_and_unflatten_attributes(span.attributes, "gen_ai.request")
-        completion_choices = filter_and_unflatten_attributes(span.attributes, "gen_ai.completion")
-        usages = filter_and_unflatten_attributes(span.attributes, "gen_ai.usage")
-        response_metadata = filter_and_unflatten_attributes(span.attributes, "gen_ai.response")
-
-        if not self._validate_metadata(request_metadata):
-            raise ValueError(f"Invalid request metadata format in span attributes: {request_metadata}")
-        if not self._validate_metadata(response_metadata):
-            raise ValueError(f"Invalid response metadata format in span attributes: {response_metadata}")
-        if not self._validate_completion(completion_choices):
-            raise ValueError(
-                "Invalid completion choices format in span attributes. Must be a list of dict, "
-                f"each containing a 'message' dict: {completion_choices}"
-            )
+        prompt_messages = self._parse_prompt_messages(span)
+        request_metadata = self._parse_request(span)
+        completion_choices = self._parse_completion_choices(span)
+        usages = self._parse_usages(span)
+        response_metadata = self._parse_response(span)
 
         request_body = cast(
             CompletionCreateParams,
@@ -115,13 +128,63 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             malformed_fields={},  # TODO: malformed fields
         )
 
-    def _parse_litellm_request(self, span: Union[Span, Tree[Span]]) -> ChatCompletionCall: ...
+    def _augment_litellm_raw_gen_ai_request(
+        self, span: AdaptingSpan, request: Dict[str, Any], response: Dict[str, Any]
+    ) -> None:
+        """Augment the request/response with more rich info from the sibling raw_gen_ai_request span.
+
+        The request and response are modified in place.
+        """
+        hosted_vllm = filter_and_unflatten_attributes(span.attributes, "llm.hosted_vllm")
+        if not hosted_vllm:
+            return
+
+        if not isinstance(hosted_vllm, dict):
+            raise ValueError(f"Invalid hosted_vllm format in span attributes: {hosted_vllm}")
+
+        if "choices" in hosted_vllm:
+            choices = ast.literal_eval(hosted_vllm["choices"])
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise ValueError(f"Invalid choices format in hosted_vllm: {choices}")
+            if "token_ids" in choices[0]:
+                response["choices"][0]["token_ids"] = choices[0]["token_ids"]
+
+        if "prompt_token_ids" in hosted_vllm:
+            request["prompt_token_ids"] = ast.literal_eval(hosted_vllm["prompt_token_ids"])
+
+    def _parse_litellm_request(self, span: AdaptingSpan) -> ChatCompletionCall:
+        prompt_messages = self._parse_prompt_messages(span)
+        completion_choices = self._parse_completion_choices(span)
+        usages = self._parse_usages(span)
+        request_metadata = self._parse_request(span)
+        response_metadata = self._parse_response(span)
+
+        request_body = {"messages": prompt_messages, **request_metadata}
+        response_body = {
+            **response_metadata,
+            "choices": completion_choices,
+            "usage": usages,
+        }
+
+        # If the underlying backend is vllm, we have more rich info in sibling span.
+        for sibling in span.siblings():
+            if sibling.name == "raw_gen_ai_request":
+                self._augment_litellm_raw_gen_ai_request(sibling, request_body, response_body)
+
+        return ChatCompletionCall(
+            request=cast(
+                CompletionCreateParams,
+                TypeAdapter(CompletionCreateParams).validate_python(request_body),
+            ),
+            response=ChatCompletion.model_validate(response_body),
+            malformed_fields={},  # TODO: malformed fields
+        )
 
     def adapt_one(self, source: AdaptingSpan) -> AdaptingSpan:
         if source.name == "openai.chat.completion.create" or source.name == "openai.chat.completion":
             chat_completion_call = self._parse_openai_chat_completion_create(source)
             return source.with_data(chat_completion_call)
-        elif source.name == "raw_gen_ai_request":
+        elif source.name == "litellm_request":
             # Litellm request span
             chat_completion_call = self._parse_litellm_request(source)
             return source.with_data(chat_completion_call)

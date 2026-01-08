@@ -218,6 +218,9 @@ class AdaptingSpan(Span):
     been converted to a different format by an adapter.
     """
 
+    class Config:
+        arbitrary_types_allowed = True
+
     data: Any
     """The data in the adapted format. Could be annotations, calls, or other structured data."""
 
@@ -272,6 +275,16 @@ class AdaptingSpan(Span):
         if self.container is None or not isinstance(self.container, Tree):
             raise ValueError("AdaptingSpan.children() is only applicable when container is non-empty and a Tree.")
         return [child.item for child in self.container.children]
+
+    def siblings(self) -> Sequence[AdaptingSpan]:
+        """Get the sibling spans as [`AdaptingSpan`][agentlightning.AdaptingSpan] instances.
+
+        Only applicable when the container is a [`Tree`][agentlightning.Tree].
+        """
+        parent = self.parent_span()
+        if parent is None:
+            return []
+        return [child for child in parent.children() if child != self]
 
     def parent_span(self) -> Optional[AdaptingSpan]:
         """Get the parent span if available.
