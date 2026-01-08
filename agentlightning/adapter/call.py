@@ -27,6 +27,8 @@ from agentlightning.utils.otel import filter_and_unflatten_attributes, query_lin
 
 from .base import SequenceAdapter
 
+CompletionCreateParamsType: TypeAdapter[CompletionCreateParams] = TypeAdapter(CompletionCreateParams)
+
 
 class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
     """Curate the chat completion calls from the spans."""
@@ -47,15 +49,28 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         completion_choices = filter_and_unflatten_attributes(span.attributes, "gen_ai.completion")
         if not isinstance(completion_choices, list):
             raise ValueError(f"Invalid completion choices format in span attributes: {completion_choices}")
-        for choice in completion_choices:
+        for index, choice in enumerate(completion_choices):
             if not isinstance(choice, dict):
                 raise ValueError(
                     f"Invalid completion choice format in span attributes. Choice must be a dict: {choice}"
                 )
-            if "message" not in choice or not isinstance(choice["message"], dict):
-                raise ValueError(
-                    f"Invalid completion choice format in span attributes. Choice must contain a 'message' dict: {choice}"
-                )
+
+            choice["index"] = index
+
+            # Uncover the message from the choice
+            message: Dict[str, Any] = {
+                "role": "assistant",
+            }
+            if "content" in choice:
+                message["content"] = cast(Dict[str, Any], choice).pop("content")
+            if isinstance(span.container, Tree):
+                # Get additional fields from child spans if any
+                for child in span.children():
+                    tool_call = self._parse_agentops_tool_calls(child)
+                    if tool_call is not None:
+                        message.setdefault("tool_calls", []).append(tool_call)
+            choice["message"] = message
+
         return completion_choices
 
     def _parse_prompt_messages(self, span: AdaptingSpan) -> List[Dict[str, Any]]:
@@ -70,7 +85,7 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             raise ValueError(f"Invalid usages format in span attributes: {usages}")
         return usages
 
-    def _parse_agentops_tool_calls(self, span: Span) -> Optional[ChatCompletionMessageFunctionToolCall]:
+    def _parse_agentops_tool_calls(self, span: Span) -> Optional[Dict[str, Any]]:
         if span.name.startswith("tool_call."):
             tool_call_data = filter_and_unflatten_attributes(span.attributes, "tool.")
             if isinstance(tool_call_data, dict) and "call" in tool_call_data:
@@ -81,7 +96,7 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
                     **tool_call_data["call"],
                     "function": {k: v for k, v in tool_call_data.items() if k != "call"},
                 }
-            return ChatCompletionMessageFunctionToolCall.model_validate(tool_call_data)
+            return cast(Dict[str, Any], tool_call_data)
         return None
 
     def _parse_openai_chat_completion_create(self, span: AdaptingSpan) -> ChatCompletionCall:
@@ -91,36 +106,19 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         usages = self._parse_usages(span)
         response_metadata = self._parse_response(span)
 
-        request_body = cast(
-            CompletionCreateParams,
-            TypeAdapter(CompletionCreateParams).validate_python({"messages": prompt_messages, **request_metadata}),
+        validated_request_body = CompletionCreateParamsType.validate_python(
+            {"messages": prompt_messages, **request_metadata}
         )
-
-        if isinstance(span.container, Tree):
-            # Get additional tool calls from child spans
-            additional_tool_calls: List[ChatCompletionMessageFunctionToolCall] = []
-            for child in span.children():
-                tool_call = self._parse_agentops_tool_calls(child)
-                if tool_call is not None:
-                    additional_tool_calls.append(tool_call)
-
-            for choice in completion_choices:
-                tool_calls = choice["message"].get("tool_calls", [])
-                if isinstance(tool_calls, list):
-                    cast(List[Any], tool_calls).extend(additional_tool_calls)
-                else:
-                    raise ValueError(
-                        f"Invalid tool_calls format in completion choice message. Must be a list: {completion_choices}"
-                    )
-                choice["message"]["tool_calls"] = tool_calls
-                # Only assign to the first choice.
-                break
+        normalized_request_body = CompletionCreateParamsType.dump_python(validated_request_body, mode="json")
+        print(normalized_request_body)
 
         return ChatCompletionCall(
-            request=request_body,
+            request=normalized_request_body,
             response=ChatCompletion.model_validate(
                 {
                     **response_metadata,
+                    "object": "chat.completion",
+                    "created": int(span.ensure_end_time()),
                     "choices": completion_choices,
                     "usage": usages,
                 }
