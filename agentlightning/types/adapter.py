@@ -266,7 +266,7 @@ class AdaptingSpan(Span):
         if isinstance(span, AdaptingSpan):
             return span.model_copy(update={"data": data})
         else:
-            return AdaptingSpan.model_validate(span.model_dump()).model_copy(update={"data": data})
+            return AdaptingSpan.model_validate({**span.model_dump(), "data": data})
 
     def children(self) -> Sequence[AdaptingSpan]:
         """Get the child spans as [`AdaptingSpan`][agentlightning.AdaptingSpan] instances.
