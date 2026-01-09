@@ -24,6 +24,17 @@ logger = logging.getLogger(__name__)
 
 
 def default_span_order(span: Span) -> tuple[int, float, float]:
+    """Return a tuple for sorting spans by sequence ID, then start time, then end time.
+
+    Args:
+        span: The span to extract ordering keys from.
+
+    Returns:
+        A tuple of (sequence_id, start_time, end_time) for use as a sort key.
+
+    Raises:
+        ValueError: If the span has no start or end time set.
+    """
     return (span.sequence_id, span.ensure_start_time(), span.ensure_end_time())
 
 
@@ -118,10 +129,14 @@ class _TreeLikeGraph:
                     graph.forward_graph[span.parent_id].append(span.span_id)
                     graph.root_ids.discard(span.span_id)
                     graph.parent_map[span.span_id] = span.parent_id
-                elif logs_invalid_parent:
-                    logger.debug(
-                        f'Span {span.span_id} has an invalid parent ID "{span.parent_id}". The parent will be ignored.'
-                    )
+                else:
+                    # Span has invalid parent, treat as root
+                    graph.root_ids.add(span.span_id)
+                    if logs_invalid_parent:
+                        logger.debug(
+                            f'Span {span.span_id} has an invalid parent ID "{span.parent_id}". '
+                            "The parent will be ignored and the span will be treated as a root."
+                        )
 
         graph.validate_no_cycles()
 
@@ -129,7 +144,17 @@ class _TreeLikeGraph:
 
 
 class ToSpans(SequenceAdapter[SpanLike, Span]):
-    """Normalize the span-like objects (e.g., OpenTelemetry `ReadableSpan`) to [spans][agentlightning.Span]."""
+    """Normalize span-like objects (e.g., OpenTelemetry `ReadableSpan`) to [Span][agentlightning.Span].
+
+    This adapter handles conversion from various span formats to the internal Span type.
+    Native Span objects pass through unchanged, while OpenTelemetry spans are converted
+    using the provided default values for rollout, attempt, and sequence identifiers.
+
+    Args:
+        default_rollout_id: Default rollout ID for converted OpenTelemetry spans.
+        default_attempt_id: Default attempt ID for converted OpenTelemetry spans.
+        default_sequence_id: Default sequence ID for converted OpenTelemetry spans.
+    """
 
     def __init__(
         self,
@@ -142,6 +167,14 @@ class ToSpans(SequenceAdapter[SpanLike, Span]):
         self.default_sequence_id = default_sequence_id
 
     def adapt_one(self, source: SpanLike) -> Span:
+        """Convert a single span-like object to a Span.
+
+        Args:
+            source: A Span or OpenTelemetry ReadableSpan to convert.
+
+        Returns:
+            The converted Span object. Native Spans pass through unchanged.
+        """
         if isinstance(source, Span):
             return source
         return Span.from_opentelemetry(
@@ -153,15 +186,38 @@ class ToSpans(SequenceAdapter[SpanLike, Span]):
 
 
 class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
+    """Convert a sequence of spans into a tree structure.
+
+    This adapter organizes flat span sequences into a hierarchical tree based on parent-child
+    relationships. It can repair various structural issues in the span data:
+
+    - **Bad hierarchy**: Spans that are incorrectly positioned (e.g., dangling spans without
+      proper parents despite being contained within other spans' time ranges).
+    - **Multiple roots**: Cases where more than one span has no parent.
+
+    Note:
+        Spans with invalid parent IDs (referencing non-existent spans) will cause a ValueError.
+        Use [RepairMalformedSpans][agentlightning.adapter.preprocess.RepairMalformedSpans] with
+        `ensure_valid_parent_ids=True` before calling this adapter if you need to handle
+        invalid parent references.
+
+    Args:
+        repair_bad_hierarchy: Controls hierarchy repair. `"dangling"` repairs only orphaned spans,
+            `"all"` re-evaluates all span placements, `"none"` skips hierarchy repair.
+        repair_multiple_roots: If True, creates a virtual root when multiple root spans exist.
+
+    Raises:
+        TypeError: If the input is not a sequence.
+        ValueError: If no spans are provided, if any span has an invalid parent ID,
+            or if the tree cannot be constructed.
+    """
 
     def __init__(
         self,
         repair_bad_hierarchy: Literal["dangling", "all", "none"] = "dangling",
-        repair_missing_parents: bool = True,
         repair_multiple_roots: bool = True,
     ):
         self.repair_bad_hierarchy = repair_bad_hierarchy
-        self.repair_missing_parents = repair_missing_parents
         self.repair_multiple_roots = repair_multiple_roots
 
     def _find_eligible_parents(
@@ -205,10 +261,10 @@ class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
                     continue
             spans_to_consider.append(candidate_parent)
 
-        # Sort the spans
+        # Sort the spans: (1) shortest to longest duration, (2) deeper to shallower (prefer more specific ancestors)
         return sorted(
             spans_to_consider,
-            key=lambda span: (span.ensure_end_time() - span.ensure_start_time(), cache_depths[span.span_id]),
+            key=lambda span: (span.ensure_end_time() - span.ensure_start_time(), -cache_depths[span.span_id]),
         )
 
     def _repair_bad_hierarchy(self, source: Sequence[Span]) -> Sequence[Span]:
@@ -216,6 +272,9 @@ class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
 
         This is based on the chronological relationships between start time and end time of spans.
         """
+        if self.repair_bad_hierarchy == "none":
+            return source
+
         graph = _TreeLikeGraph.from_spans(source)
         depths = graph.compute_depths()
 
@@ -245,34 +304,24 @@ class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
 
         return scan_order
 
-    def _repair_missing_parents(self, source: Sequence[Span]) -> Sequence[Span]:
+    def _validate_parent_ids(self, source: Sequence[Span]) -> None:
+        """Validate that all parent IDs reference existing spans.
+
+        Raises:
+            ValueError: If any span references a non-existent parent.
+        """
         valid_span_ids: Set[str] = set(span.span_id for span in source)
-        parent_to_children: Dict[str, List[Span]] = defaultdict(list)
+        invalid_refs: List[str] = []
 
         for span in source:
             if span.parent_id is not None and span.parent_id not in valid_span_ids:
-                parent_to_children[span.parent_id].append(span)
+                invalid_refs.append(f"{span.span_id} -> {span.parent_id}")
 
-        created_spans: List[Span] = []
-        for parent_id, children in parent_to_children.items():
-            child = children[0]
-            # Create a virtual span for the missing parent
-            created_spans.append(
-                Span.from_attributes(
-                    rollout_id=child.rollout_id,
-                    attempt_id=child.attempt_id,
-                    sequence_id=child.sequence_id,
-                    trace_id=child.trace_id,
-                    span_id=parent_id,
-                    parent_id=None,
-                    name=AGL_VIRTUAL,
-                    attributes={},
-                    start_time=min(child.ensure_start_time() for child in children),
-                    end_time=max(child.ensure_end_time() for child in children),
-                )
+        if invalid_refs:
+            raise ValueError(
+                f"Spans reference non-existent parent IDs: {', '.join(invalid_refs)}. "
+                "Use RepairMalformedSpans with ensure_valid_parent_ids=True to fix this."
             )
-
-        return [*source, *created_spans]
 
     def _repair_multiple_roots(self, source: Sequence[Span]) -> Sequence[Span]:
         root_spans = [span for span in source if span.parent_id is None]
@@ -301,18 +350,28 @@ class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
         return [new_root_span, *updated_spans]
 
     def adapt(self, source: Sequence[Span]) -> Tree[AdaptingSpan]:
+        """Convert a sequence of spans into a tree of AdaptingSpan objects.
+
+        Args:
+            source: A sequence of Span objects to organize into a tree.
+
+        Returns:
+            A Tree with AdaptingSpan items representing the hierarchical structure.
+
+        Raises:
+            TypeError: If source is not a sequence.
+            ValueError: If source is empty, has invalid parent IDs, or cannot form a valid tree.
+        """
         if not isinstance(source, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"Expected a sequence of spans, but got {type(source)}")
         if not source:
             raise ValueError("No spans provided to create Tree")
 
+        # Validate parent IDs before any processing
+        self._validate_parent_ids(source)
+
         source = self._repair_bad_hierarchy(source)
 
-        # The other repairing steps should be done *after* repairing the bad hierarchy because
-        # some problems might be fixed during the bad hierarchy repairing.
-        if self.repair_missing_parents:
-            source = self._repair_missing_parents(source)
-        # repair missing parents might have introduced new roots.
         if self.repair_multiple_roots:
             source = self._repair_multiple_roots(source)
 
@@ -322,24 +381,41 @@ class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
 
 
 class ToAdaptingSpans(Adapter[Sequence[Span], AdaptingSequence[AdaptingSpan]]):
-    """Sort the spans with sequence ID as the primary key and start time as the secondary key
-    and end time as the tertiary key."""
+    """Convert spans to a sorted AdaptingSequence.
+
+    Sorts spans by sequence ID (primary), start time (secondary), and end time (tertiary),
+    then wraps each in an AdaptingSpan for use in adaptation pipelines.
+    """
 
     def adapt(self, source: Sequence[Span]) -> AdaptingSequence[AdaptingSpan]:
+        """Sort spans and convert to AdaptingSequence.
+
+        Args:
+            source: A sequence of Span objects to sort and convert.
+
+        Returns:
+            An AdaptingSequence containing sorted AdaptingSpan objects.
+        """
         sorted_spans = sorted(source, key=default_span_order)
         return AdaptingSequence([AdaptingSpan.from_span(span, None) for span in sorted_spans])
 
 
 class RepairMalformedSpans(Adapter[Sequence[Span], Sequence[Span]]):
-    """The adapter repairs multiple common issues with spans.
+    """Repair common structural issues in span data.
 
-    1. Repair the end time of the spans by:
+    This adapter fixes several types of malformed span data:
 
-       * Ensuring the end time is greater than the start time.
-       * Fill the spans with no end time to be the maximum start/end time of all spans.
+    - **Missing times**: Fills in missing start/end times using the maximum known time.
+    - **Negative duration**: Adjusts end times that are earlier than start times.
+    - **Improper nesting**: Expands parent time ranges to contain all children.
+    - **Invalid parent IDs**: Removes references to non-existent parent spans.
 
-    2. Repair the parent ID. If a span has a parent ID that does not exist in the set of spans,
-       the parent ID will be set to None.
+    Spans that don't require repair pass through unchanged (same object reference).
+
+    Args:
+        ensure_positive_duration: If True, sets end_time = start_time when end < start.
+        ensure_proper_nesting: If True, expands parent spans to contain children's time ranges.
+        ensure_valid_parent_ids: If True, sets parent_id to None for orphaned spans.
     """
 
     def __init__(
@@ -425,6 +501,15 @@ class RepairMalformedSpans(Adapter[Sequence[Span], Sequence[Span]]):
         return new_spans
 
     def adapt(self, source: Sequence[Span]) -> Sequence[Span]:
+        """Repair malformed spans according to the configured repair options.
+
+        Args:
+            source: A sequence of Span objects to repair.
+
+        Returns:
+            A sequence of repaired Span objects. Unmodified spans retain their original
+            object reference.
+        """
         # This step is always performed first no matter whether the flags are set.
         new_spans = self._repair_start_end_time(source)
         if self.ensure_proper_nesting:
