@@ -273,7 +273,8 @@ class SelectByAnnotation(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         if self.mode == "include":
             return source.retain(lambda span: span in linked_spans)
         else:
-            return source.prune(lambda span: span not in linked_spans)
+            # prune removes items where predicate is True, so we remove linked spans
+            return source.prune(lambda span: span in linked_spans)
 
 
 class RepairMissingLinks(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
@@ -341,7 +342,8 @@ class RepairMissingLinks(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             yield from visit(source)
 
         elif self.candidate_scope == "all":
-            return sorted(list(source), key=lambda span: default_span_order(span))
+            # Return as a single group containing all spans sorted by default order
+            yield sorted(list(source), key=lambda span: default_span_order(span))
 
         else:
             raise ValueError(f"Invalid candidate scope: {self.candidate_scope}")
