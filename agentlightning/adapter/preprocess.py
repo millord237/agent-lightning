@@ -18,6 +18,7 @@ from .base import Adapter, SequenceAdapter
 
 T_from = TypeVar("T_from")
 T_to = TypeVar("T_to")
+T_span = TypeVar("T_span", bound=Span, covariant=True)
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +92,10 @@ class _TreeLikeGraph:
 
         return ancestors
 
-    def to_tree(self, spans: Sequence[Span]) -> Tree[Span]:
+    def to_tree(self, spans: Sequence[T_span]) -> Tree[T_span]:
         spans_dict = {span.span_id: span for span in spans}
 
-        def build_subtree(node_id: str) -> Tree[Span]:
+        def build_subtree(node_id: str) -> Tree[T_span]:
             children = [build_subtree(child_id) for child_id in self.forward_graph.get(node_id, [])]
             return Tree(spans_dict[node_id], sorted(children, key=lambda child: default_span_order(child.item)))
 
@@ -151,7 +152,7 @@ class ToSpans(SequenceAdapter[SpanLike, Span]):
         )
 
 
-class ToTree(Adapter[Sequence[Span], Tree[Span]]):
+class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
 
     def __init__(
         self,
@@ -299,7 +300,7 @@ class ToTree(Adapter[Sequence[Span], Tree[Span]]):
         ]
         return [new_root_span, *updated_spans]
 
-    def adapt(self, source: Sequence[Span]) -> Tree[Span]:
+    def adapt(self, source: Sequence[Span]) -> Tree[AdaptingSpan]:
         if not isinstance(source, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"Expected a sequence of spans, but got {type(source)}")
         if not source:
@@ -315,7 +316,9 @@ class ToTree(Adapter[Sequence[Span], Tree[Span]]):
         if self.repair_multiple_roots:
             source = self._repair_multiple_roots(source)
 
-        return _TreeLikeGraph.from_spans(source).to_tree(source)
+        graph = _TreeLikeGraph.from_spans(source)
+        adapting_spans = [AdaptingSpan.from_span(span, None) for span in source]
+        return graph.to_tree(adapting_spans)
 
 
 class ToAdaptingSpans(Adapter[Sequence[Span], AdaptingSequence[AdaptingSpan]]):

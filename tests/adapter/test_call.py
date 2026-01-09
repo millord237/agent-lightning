@@ -4,7 +4,7 @@ from typing import List
 
 from agentlightning.adapter.base import Chain
 from agentlightning.adapter.call import IdentifyChatCompletionCalls
-from agentlightning.adapter.preprocess import RepairMalformedSpans, ToAdaptingSpans
+from agentlightning.adapter.preprocess import RepairMalformedSpans, ToAdaptingSpans, ToTree
 from agentlightning.types.tracer import Span
 
 
@@ -123,9 +123,13 @@ def test_openai_calls():
         ),
     ]
 
+    # r1 = RepairMalformedSpans()(spans)
+    # r2 = ToTree()(r1)
+    # r2.visualize(filename="test_openai_calls", item_to_str=lambda span: span.name)
+
     adapter = Chain(
         RepairMalformedSpans(),
-        ToAdaptingSpans(),
+        ToTree(),
         IdentifyChatCompletionCalls(),
     )
 

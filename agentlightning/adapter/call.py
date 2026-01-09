@@ -5,14 +5,14 @@
 from __future__ import annotations
 
 import ast
+import json
 from typing import Any, Dict, List, Optional, cast
 
 from openai.types.chat import (
     ChatCompletion,
-    ChatCompletionMessageFunctionToolCall,
     CompletionCreateParams,
 )
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from agentlightning.types.adapter import (
     AdaptingSpan,
@@ -37,6 +37,14 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         request = filter_and_unflatten_attributes(span.attributes, "gen_ai.request")
         if not isinstance(request, dict):
             raise ValueError(f"Invalid request format in span attributes: {request}")
+        if "functions" in request:
+            if not isinstance(request["functions"], list):
+                raise ValueError(f"Invalid functions format in request. Must be a list: {request['functions']}")
+            for function in cast(List[Any], request["functions"]):
+                if not isinstance(function, dict):
+                    raise ValueError(f"Invalid function format in request. Must be a dict: {function}")
+                if "parameters" in function and isinstance(function["parameters"], str):
+                    function["parameters"] = json.loads(function["parameters"])
         return request
 
     def _parse_response(self, span: AdaptingSpan) -> Dict[str, Any]:
@@ -77,6 +85,24 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         prompt_messages = filter_and_unflatten_attributes(span.attributes, "gen_ai.prompt")
         if not isinstance(prompt_messages, list) or not all(isinstance(msg, dict) for msg in prompt_messages):
             raise ValueError(f"Invalid prompt messages format in span attributes: {prompt_messages}")
+
+        # Fix discrepency between OpenAI API and AGL span attributes.
+        for message in prompt_messages:
+            if not isinstance(message, dict):
+                raise ValueError(f"Invalid message format in prompt messages. Must be a dict: {message}")
+            if "tool_calls" in message:
+                if not isinstance(message["tool_calls"], list):
+                    raise ValueError(f"Invalid tool calls format in message. Must be a list: {message['tool_calls']}")
+                for tool_call in cast(List[Any], message["tool_calls"]):
+                    if not isinstance(tool_call, dict):
+                        raise ValueError(f"Invalid tool call format in message. Must be a dict: {tool_call}")
+                    if "type" not in tool_call:
+                        tool_call["type"] = "function"
+                    if "function" not in tool_call and "name" in tool_call and "arguments" in tool_call:
+                        tool_call["function"] = {
+                            "name": cast(Dict[str, Any], tool_call).pop("name"),
+                            "arguments": cast(Dict[str, Any], tool_call).pop("arguments"),
+                        }
         return prompt_messages
 
     def _parse_usages(self, span: AdaptingSpan) -> Dict[str, Any]:
@@ -99,6 +125,29 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             return cast(Dict[str, Any], tool_call_data)
         return None
 
+    def _normalize_request(self, request_body: Dict[str, Any]) -> CompletionCreateParams:
+        validated_request = CompletionCreateParamsType.validate_python(request_body)
+
+        def _to_plain_object(object: Any, path: List[str]) -> Any:
+            if type(object).__name__ == "ValidatorIterator":
+                try:
+                    return [_to_plain_object(item, path + [str(i)]) for i, item in enumerate(object)]
+                except ValidationError as exc:
+                    raise ValueError(
+                        "Failed to convert ValidatorIterator to list.\n"
+                        "ValidatorIterator path (see below for subpath): " + ".".join(path) + "\nError: " + str(exc)
+                    ) from exc
+            elif isinstance(object, dict):
+                return {k: _to_plain_object(v, path + [k]) for k, v in object.items()}  # type: ignore
+            elif isinstance(object, list):
+                return [_to_plain_object(item, path + [str(i)]) for i, item in enumerate(object)]  # type: ignore
+            elif isinstance(object, tuple):
+                return tuple(_to_plain_object(item, path + [str(i)]) for i, item in enumerate(object))  # type: ignore
+            else:
+                return object
+
+        return _to_plain_object(validated_request, [])
+
     def _parse_openai_chat_completion_create(self, span: AdaptingSpan) -> ChatCompletionCall:
         prompt_messages = self._parse_prompt_messages(span)
         request_metadata = self._parse_request(span)
@@ -106,23 +155,20 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         usages = self._parse_usages(span)
         response_metadata = self._parse_response(span)
 
-        validated_request_body = CompletionCreateParamsType.validate_python(
-            {"messages": prompt_messages, **request_metadata}
+        request = self._normalize_request({"messages": prompt_messages, **request_metadata})
+        response = ChatCompletion.model_validate(
+            {
+                **response_metadata,
+                "object": "chat.completion",
+                "created": int(span.ensure_end_time()),
+                "choices": completion_choices,
+                "usage": usages,
+            }
         )
-        normalized_request_body = CompletionCreateParamsType.dump_python(validated_request_body, mode="json")
-        print(normalized_request_body)
 
-        return ChatCompletionCall(
-            request=normalized_request_body,
-            response=ChatCompletion.model_validate(
-                {
-                    **response_metadata,
-                    "object": "chat.completion",
-                    "created": int(span.ensure_end_time()),
-                    "choices": completion_choices,
-                    "usage": usages,
-                }
-            ),
+        return ChatCompletionCall.model_construct(
+            request=request,
+            response=response,
             malformed_fields={},  # TODO: malformed fields
         )
 

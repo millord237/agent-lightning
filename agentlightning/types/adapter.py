@@ -92,32 +92,32 @@ class BaseAdaptingSequence(Sequence[T_co], Generic[T_co]):
 # General containers
 
 
-class Tree(BaseAdaptingSequence[T], Generic[T]):
+class Tree(BaseAdaptingSequence[T_co], Generic[T_co]):
     """This is a generic tree data structure that can be used to represent the structure of a tree.
 
     This data structure is immutable.
     """
 
-    def __init__(self, item: T, children: Sequence[Tree[T]]) -> None:
+    def __init__(self, item: T_co, children: Sequence[Tree[T_co]]) -> None:
         self._item = item
         self._children = children
-        self._parent: Optional[weakref.ReferenceType[Tree[T]]] = None
+        self._parent: Optional[weakref.ReferenceType[Tree[T_co]]] = None
         for child in self._children:
             child._parent = weakref.ref(self)  # type: ignore
 
     @property
-    def item(self) -> T:
+    def item(self) -> T_co:
         return self._item
 
     @property
-    def children(self) -> Sequence[Tree[T]]:
+    def children(self) -> Sequence[Tree[T_co]]:
         return self._children
 
     @property
-    def parent(self) -> Optional[Tree[T]]:
+    def parent(self) -> Optional[Tree[T_co]]:
         return self._parent() if self._parent is not None else None
 
-    def traverse(self) -> Iterable[T]:
+    def traverse(self) -> Iterable[T_co]:
         yield self._item
         for child in self._children:
             yield from child.traverse()
@@ -125,18 +125,18 @@ class Tree(BaseAdaptingSequence[T], Generic[T]):
     def size(self) -> int:
         return 1 + sum(child.size() for child in self._children)
 
-    def get(self, index: Union[int, slice]) -> Union[T, Sequence[T]]:
+    def get(self, index: Union[int, slice]) -> Union[T_co, Sequence[T_co]]:
         """Get the index-th item in the tree (O(n) time complexity).
 
         I think this is not efficient, but it's seldomly used.
         """
         return list(self.traverse())[index]
 
-    def map(self, func: Callable[[T], V]) -> Tree[V]:
+    def map(self, func: Callable[[T_co], V]) -> Tree[V]:
         """Map a function over all items in the tree."""
         return Tree(func(self._item), [child.map(func) for child in self._children])
 
-    def _retain_subtree(self, predicate: Callable[[T], bool]) -> Optional[Tree[T]]:
+    def _retain_subtree(self, predicate: Callable[[T_co], bool]) -> Optional[Tree[T_co]]:
         if predicate(self._item):
             # If the current node satisfies the predicate, retain the subtree
             return self
@@ -148,21 +148,21 @@ class Tree(BaseAdaptingSequence[T], Generic[T]):
 
         return Tree(self._item, [subtree for subtree in subtrees if subtree is not None])
 
-    def retain(self, predicate: Callable[[T], bool]) -> Tree[T]:
+    def retain(self, predicate: Callable[[T_co], bool]) -> Tree[T_co]:
         """Prune the tree by retaining subtrees with root nodes that satisfy the predicate.
 
         The root node is always retained.
         """
         return self._retain_subtree(predicate) or Tree(self._item, [])
 
-    def prune(self, predicate: Callable[[T], bool]) -> Tree[T]:
+    def prune(self, predicate: Callable[[T_co], bool]) -> Tree[T_co]:
         """Prune the tree by removing nodes that satisfy the predicate.
 
         The root node is always retained.
         """
         return Tree(self._item, [child.prune(predicate) for child in self._children if not predicate(child._item)])
 
-    def visualize(self, filename: str, item_to_str: Callable[[T], str]) -> None:
+    def visualize(self, filename: str, item_to_str: Callable[[T_co], str]) -> None:
         """Render the tree with Graphviz for debugging purposes.
 
         Args:
@@ -177,7 +177,7 @@ class Tree(BaseAdaptingSequence[T], Generic[T]):
 
         dot = graphviz.Digraph(comment="Tree")
 
-        def visit(node: Tree[T]):
+        def visit(node: Tree[T_co]):
             dot.node(str(id(node)), item_to_str(node.item))  # type: ignore
             for child in node._children:
                 visit(child)
