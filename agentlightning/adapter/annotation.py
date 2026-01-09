@@ -50,7 +50,22 @@ logger = logging.getLogger(__name__)
 
 
 class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
-    """Curate the annotations from the spans."""
+    """Identify and parse annotation data from spans based on span name conventions.
+
+    This adapter inspects each span's name to determine if it represents a known
+    annotation type (general, message, object, exception, operation) or an agent span.
+    When identified, the span's data field is populated with the corresponding annotation
+    model containing extracted attributes.
+
+    Supported annotation types:
+
+    - `AGL_ANNOTATION`: General annotations with rewards, tags, and custom fields.
+    - `AGL_MESSAGE`: Message annotations containing a message body.
+    - `AGL_OBJECT`: Object annotations containing serialized JSON or literal values.
+    - `AGL_EXCEPTION`: Exception annotations with type, message, and stacktrace.
+    - `AGL_OPERATION`: Operation annotations with name, input, and output.
+    - Agent spans: Detected via heuristics for various agent frameworks.
+    """
 
     def _filter_custom_attributes(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
         reserved_fields = [attr.value for attr in LightningSpanAttributes if attr.value in attributes]
@@ -65,6 +80,15 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         }
 
     def extract_links(self, span: Span) -> Sequence[LinkPydanticModel]:
+        """Extract link specifications from span attributes.
+
+        Args:
+            span: The span to extract links from.
+
+        Returns:
+            A sequence of link models. Returns an empty list if no links are found
+            or if the link attributes are malformed.
+        """
         try:
             return extract_links_from_attributes(span.attributes)
         except Exception as exc:
@@ -72,6 +96,16 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             return []
 
     def identify_general(self, span: Span) -> Optional[GeneralAnnotation]:
+        """Parse a general annotation span into a `GeneralAnnotation` model.
+
+        Extracts rewards, tags, links, and custom fields from the span attributes.
+
+        Args:
+            span: A span with name `AGL_ANNOTATION`.
+
+        Returns:
+            A `GeneralAnnotation` with extracted data, or None if parsing fails.
+        """
         rewards = get_rewards_from_span(span)
         primary_reward = rewards[0].value if rewards else None
         return GeneralAnnotation(
@@ -84,6 +118,15 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         )
 
     def identify_message(self, span: Span) -> Optional[MessageAnnotation]:
+        """Parse a message span into a `MessageAnnotation` model.
+
+        Args:
+            span: A span with name `AGL_MESSAGE`.
+
+        Returns:
+            A `MessageAnnotation` containing the message body, or None if the
+            message body attribute is missing.
+        """
         msg_body = get_message_value(span)
         if msg_body is None:
             logger.warning(f"Message body is missing for message span {span.span_id}")
@@ -96,6 +139,17 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         )
 
     def identify_object(self, span: Span) -> Optional[ObjectAnnotation]:
+        """Parse an object span into an `ObjectAnnotation` model.
+
+        Supports both JSON-serialized objects and literal values.
+
+        Args:
+            span: A span with name `AGL_OBJECT`.
+
+        Returns:
+            An `ObjectAnnotation` containing the deserialized object, or None if
+            deserialization fails.
+        """
         try:
             obj_value = get_object_value(span)
         except Exception as exc:
@@ -109,6 +163,17 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         )
 
     def identify_exception(self, span: Span) -> Optional[ExceptionAnnotation]:
+        """Parse an exception span into an `ExceptionAnnotation` model.
+
+        Uses OpenTelemetry semantic conventions for exception attributes.
+
+        Args:
+            span: A span with name `AGL_EXCEPTION`.
+
+        Returns:
+            An `ExceptionAnnotation` containing exception type, message, and stacktrace.
+            Missing fields default to "UnknownException" for type and empty string for others.
+        """
         exception_type = span.attributes.get(exception_attributes.EXCEPTION_TYPE, "UnknownException")
         exception_message = span.attributes.get(exception_attributes.EXCEPTION_MESSAGE, "")
         exception_stacktrace = span.attributes.get(exception_attributes.EXCEPTION_STACKTRACE, "")
@@ -122,6 +187,18 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         )
 
     def identify_operation(self, span: Span) -> Optional[OperationAnnotation]:
+        """Parse an operation span into an `OperationAnnotation` model.
+
+        Extracts operation name, input, and output. Input/output can be either
+        direct values or nested structures reconstructed from flattened attributes.
+
+        Args:
+            span: A span with name `AGL_OPERATION`.
+
+        Returns:
+            An `OperationAnnotation` containing operation details, or None if
+            attribute unpacking fails.
+        """
         try:
             operation_name = span.attributes.get(LightningSpanAttributes.OPERATION_NAME.value, "UnknownOperation")
             if LightningSpanAttributes.OPERATION_INPUT.value in span.attributes:
@@ -149,14 +226,47 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         )
 
     def extract_agent_id(self, span: Span) -> Optional[str]:
+        """Extract agent ID from span attributes.
+
+        Args:
+            span: The span to extract the agent ID from.
+
+        Returns:
+            The agent ID if found, None otherwise.
+        """
         # TODO: Support agent id in other formats
         return cast(Optional[str], span.attributes.get("agent.id"))
 
     def extract_agent_description(self, span: Span) -> Optional[str]:
+        """Extract agent description from span attributes.
+
+        Args:
+            span: The span to extract the agent description from.
+
+        Returns:
+            The agent description if found, None otherwise.
+        """
         # TODO: Support agent description in other formats
         return cast(Optional[str], span.attributes.get("agent.description"))
 
     def extract_agent_name(self, span: Span) -> Optional[str]:
+        """Extract agent name from span attributes using framework-specific heuristics.
+
+        Supports multiple agent frameworks by checking various attribute patterns:
+            1. OpenTelemetry agent spans (`agent.name`)
+            2. AgentOps decorated agents (`agentops.span.kind` + `operation.name`)
+            3. Autogen teams (`recipient_agent_type`)
+            4. LangGraph (`langchain.chain.type`)
+            5. agent-framework (`executor.id`)
+            6. Weave (`type` == "agent" + `agentlightning.operation.input.name`)
+            7. Weave + LangChain (`langchain.Chain.*` span names + `lc_name`)
+
+        Args:
+            span: The span to extract the agent name from.
+
+        Returns:
+            The agent name if detected via any supported pattern, None otherwise.
+        """
         # Case 1: OpenTelemetry Agent Spans
         agent_name = cast(Optional[str], span.attributes.get("agent.name"))
         if agent_name is not None:
@@ -197,7 +307,20 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             if attributes_lc_name is not None:
                 return attributes_lc_name
 
+        return None
+
     def detect_agent_annotation(self, span: Span) -> Optional[AgentAnnotation]:
+        """Detect and create an agent annotation from span attributes.
+
+        Uses heuristics to identify spans representing agent executions from
+        various frameworks (OpenTelemetry, AgentOps, Autogen, LangGraph, etc.).
+
+        Args:
+            span: The span to check for agent indicators.
+
+        Returns:
+            An `AgentAnnotation` if an agent is detected, None otherwise.
+        """
         agent_id = self.extract_agent_id(span)
         agent_name = self.extract_agent_name(span)
         agent_description = self.extract_agent_description(span)
@@ -213,6 +336,19 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         return None
 
     def adapt_one(self, source: AdaptingSpan) -> AdaptingSpan:
+        """Process a single span to identify and attach annotation data.
+
+        Checks the span name against known annotation types and parses the
+        corresponding annotation model. Falls back to agent detection for
+        unrecognized span names.
+
+        Args:
+            source: The span to process.
+
+        Returns:
+            The span with annotation data attached if identified, otherwise
+            the original span unchanged.
+        """
         annotation: Optional[Annotation] = None
         if source.name == AGL_ANNOTATION:
             annotation = self.identify_general(source)
@@ -269,6 +405,15 @@ class SelectByAnnotation(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             # ignore the current span for now
 
     def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> BaseAdaptingSequence[AdaptingSpan]:
+        """Filter spans based on annotation membership and links.
+
+        Args:
+            source: The span sequence to filter.
+
+        Returns:
+            A filtered sequence containing only annotated spans and their linked
+            spans (include mode), or all spans except those (exclude mode).
+        """
         linked_spans = list(self._filter_linked_spans(source))
         if self.mode == "include":
             return source.retain(lambda span: span in linked_spans)
@@ -349,6 +494,20 @@ class RepairMissingLinks(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             raise ValueError(f"Invalid candidate scope: {self.candidate_scope}")
 
     def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> BaseAdaptingSequence[AdaptingSpan]:
+        """Repair annotations that have no links by inferring targets from nearby spans.
+
+        Scans the span sequence according to the configured direction and scope,
+        linking annotations without targets to the nearest eligible candidate spans.
+
+        Args:
+            source: The span sequence containing annotations to repair.
+
+        Returns:
+            A new sequence with repaired annotations containing inferred links.
+
+        Raises:
+            ValueError: If `candidate_scope` is "siblings" but source is not a tree.
+        """
         groups = list(self._search_groups(source))
         span_id_to_link: Dict[str, LinkPydanticModel] = {}
         for group in groups:
