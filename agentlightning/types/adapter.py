@@ -99,14 +99,15 @@ class Tree(BaseAdaptingSequence[T_co], Generic[T_co]):
     """
 
     def __init__(self, item: T_co, children: Sequence[Tree[T_co]]) -> None:
-        self._item = item
         self._children = children
         self._parent: Optional[weakref.ReferenceType[Tree[T_co]]] = None
         for child in self._children:
             child._parent = weakref.ref(self)  # type: ignore
-        # Set container reference on the item if it supports it (e.g., AdaptingSpan)
-        if hasattr(item, "container"):
-            object.__setattr__(item, "container", self)
+        # Set container on item if it's an AdaptingSpan
+        if isinstance(item, AdaptingSpan):
+            self._item: T_co = item.model_copy(update={"container": self})  # type: ignore
+        else:
+            self._item = item
 
     @property
     def item(self) -> T_co:
@@ -194,7 +195,14 @@ class AdaptingSequence(BaseAdaptingSequence[T], Generic[T]):
     """A simple list implementation of AdaptingSequence."""
 
     def __init__(self, items: Sequence[T]) -> None:
-        self._items = list(items)
+        # Set container on items if they are AdaptingSpan instances
+        processed: list[T] = []
+        for item in items:
+            if isinstance(item, AdaptingSpan):
+                processed.append(item.model_copy(update={"container": self}))  # type: ignore
+            else:
+                processed.append(item)
+        self._items = processed
 
     def get(self, index: Union[int, slice]) -> Union[T, Sequence[T]]:
         return self._items[index]
@@ -285,10 +293,12 @@ class AdaptingSpan(Span):
 
         Only applicable when the container is a [`Tree`][agentlightning.Tree].
         """
-        parent = self.parent_span()
-        if parent is None:
+        if self.container is None or not isinstance(self.container, Tree):
+            raise ValueError("AdaptingSpan.siblings() is only applicable when container is non-empty and a Tree.")
+        parent_tree = self.container.parent
+        if parent_tree is None:
             return []
-        return [child for child in parent.children() if child != self]
+        return [child.item for child in parent_tree.children if child is not self.container]
 
     def parent_span(self) -> Optional[AdaptingSpan]:
         """Get the parent span if available.
@@ -317,7 +327,7 @@ class Annotation(BaseModel):
     annotation_type: AnnotationType
     """Type of the annotation."""
 
-    links: Sequence[LinkPydanticModel] = Field(default_factory=list[LinkPydanticModel])
+    links: Sequence[LinkPydanticModel] = Field(default_factory=list)  # type: ignore
     """Links to other spans or objects."""
 
 
@@ -343,7 +353,7 @@ class GeneralAnnotation(Annotation):
     annotation_type: AnnotationType = "general"
     """Type of the annotation."""
 
-    rewards: Sequence[RewardPydanticModel] = Field(default_factory=list[RewardPydanticModel])
+    rewards: Sequence[RewardPydanticModel] = Field(default_factory=list)  # type: ignore
     """Reward dimensions and values."""
 
     primary_reward: Optional[float] = None
