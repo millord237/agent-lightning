@@ -15,6 +15,7 @@ from typing import (
     Iterator,
     Literal,
     Optional,
+    Protocol,
     Sequence,
     TypeVar,
     Union,
@@ -28,16 +29,26 @@ from openai.types.chat import (
     CompletionCreateParams,
 )
 from pydantic import BaseModel, Field
+from typing_extensions import Self
 
 from agentlightning.semconv import LinkPydanticModel, RewardPydanticModel
 
 from .tracer import Attributes, Span
 
-T_co = TypeVar("T_co", covariant=True)
 T = TypeVar("T")
-V = TypeVar("V")
 
 logger = logging.getLogger(__name__)
+
+
+class BaseAdaptingSequenceItem(Protocol):
+
+    def with_container(self, container: BaseAdaptingSequence[Self]) -> Self:
+        """Create a new item with the same properties but different container."""
+        raise NotImplementedError()
+
+
+T_co = TypeVar("T_co", covariant=True, bound=BaseAdaptingSequenceItem)
+V_co = TypeVar("V_co", covariant=True, bound=BaseAdaptingSequenceItem)
 
 
 class BaseAdaptingSequence(Sequence[T_co], Generic[T_co]):
@@ -62,7 +73,7 @@ class BaseAdaptingSequence(Sequence[T_co], Generic[T_co]):
         """Get the index-th item in the sequence."""
         raise NotImplementedError()
 
-    def map(self, func: Callable[[T_co], V]) -> BaseAdaptingSequence[V]:
+    def map(self, func: Callable[[T_co], V_co]) -> BaseAdaptingSequence[V_co]:
         """Map a function over all items in the sequence."""
         raise NotImplementedError()
 
@@ -103,11 +114,7 @@ class Tree(BaseAdaptingSequence[T_co], Generic[T_co]):
         self._parent: Optional[weakref.ReferenceType[Tree[T_co]]] = None
         for child in self._children:
             child._parent = weakref.ref(self)  # type: ignore
-        # Set container on item if it's an AdaptingSpan
-        if isinstance(item, AdaptingSpan):
-            self._item: T_co = item.model_copy(update={"container": self})  # type: ignore
-        else:
-            self._item = item
+        self._item = item.with_container(self)
 
     @property
     def item(self) -> T_co:
@@ -136,7 +143,7 @@ class Tree(BaseAdaptingSequence[T_co], Generic[T_co]):
         """
         return list(self.traverse())[index]
 
-    def map(self, func: Callable[[T_co], V]) -> Tree[V]:
+    def map(self, func: Callable[[T_co], V_co]) -> Tree[V_co]:
         """Map a function over all items in the tree."""
         return Tree(func(self._item), [child.map(func) for child in self._children])
 
@@ -191,39 +198,33 @@ class Tree(BaseAdaptingSequence[T_co], Generic[T_co]):
         dot.render(filename, format="png", cleanup=True)  # type: ignore
 
 
-class AdaptingSequence(BaseAdaptingSequence[T], Generic[T]):
+class AdaptingSequence(BaseAdaptingSequence[T_co], Generic[T_co]):
     """A simple list implementation of AdaptingSequence."""
 
-    def __init__(self, items: Sequence[T]) -> None:
+    def __init__(self, items: Sequence[T_co]) -> None:
         # Set container on items if they are AdaptingSpan instances
-        processed: list[T] = []
-        for item in items:
-            if isinstance(item, AdaptingSpan):
-                processed.append(item.model_copy(update={"container": self}))  # type: ignore
-            else:
-                processed.append(item)
-        self._items = processed
+        self._items = [item.with_container(self) for item in items]
 
-    def get(self, index: Union[int, slice]) -> Union[T, Sequence[T]]:
+    def get(self, index: Union[int, slice]) -> Union[T_co, Sequence[T_co]]:
         return self._items[index]
 
-    def traverse(self) -> Iterable[T]:
+    def traverse(self) -> Iterable[T_co]:
         return iter(self._items)
 
     def size(self) -> int:
         return len(self._items)
 
-    def map(self, func: Callable[[T], V]) -> AdaptingSequence[V]:
+    def map(self, func: Callable[[T_co], V_co]) -> AdaptingSequence[V_co]:
         return AdaptingSequence([func(item) for item in self._items])
 
-    def retain(self, predicate: Callable[[T], bool]) -> AdaptingSequence[T]:
+    def retain(self, predicate: Callable[[T_co], bool]) -> AdaptingSequence[T_co]:
         return AdaptingSequence([item for item in self._items if predicate(item)])
 
-    def prune(self, predicate: Callable[[T], bool]) -> AdaptingSequence[T]:
+    def prune(self, predicate: Callable[[T_co], bool]) -> AdaptingSequence[T_co]:
         return AdaptingSequence([item for item in self._items if not predicate(item)])
 
 
-class AdaptingSpan(Span):
+class AdaptingSpan(BaseAdaptingSequenceItem, Span):
     """A span that has been adapted to a different format.
 
     This class extends the base [`Span`][agentlightning.Span] class to represent spans that have
@@ -261,6 +262,10 @@ class AdaptingSpan(Span):
                     f"Current data: {self.data}, New data: {data}"
                 )
         return self.model_copy(update={"data": data})
+
+    def with_container(self, container: BaseAdaptingSequence[AdaptingSpan]) -> AdaptingSpan:
+        """Create a new [`AdaptingSpan`][agentlightning.AdaptingSpan] with the same properties but different container."""
+        return self.model_copy(update={"container": container})
 
     @classmethod
     def from_span(cls, span: Span, data: Any) -> AdaptingSpan:
