@@ -253,13 +253,14 @@ class IdentifyAnnotations(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         """Extract agent name from span attributes using framework-specific heuristics.
 
         Supports multiple agent frameworks by checking various attribute patterns:
-            1. OpenTelemetry agent spans (`agent.name`)
-            2. AgentOps decorated agents (`agentops.span.kind` + `operation.name`)
-            3. Autogen teams (`recipient_agent_type`)
-            4. LangGraph (`langchain.chain.type`)
-            5. agent-framework (`executor.id`)
-            6. Weave (`type` == "agent" + `agentlightning.operation.input.name`)
-            7. Weave + LangChain (`langchain.Chain.*` span names + `lc_name`)
+
+        1. OpenTelemetry agent spans (`agent.name`)
+        2. AgentOps decorated agents (`agentops.span.kind` + `operation.name`)
+        3. Autogen teams (`recipient_agent_type`)
+        4. LangGraph (`langchain.chain.type`)
+        5. agent-framework (`executor.id`)
+        6. Weave (`type` == "agent" + `agentlightning.operation.input.name`)
+        7. Weave + LangChain (`langchain.Chain.*` span names + `lc_name`)
 
         Args:
             span: The span to extract the agent name from.
@@ -387,7 +388,6 @@ class SelectByAnnotation(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
 
     Args:
         mode: "include" to select spans within the annotations; "exclude" to exclude them.
-
     """
 
     def __init__(self, mode: Literal["include", "exclude"]) -> None:
@@ -400,7 +400,9 @@ class SelectByAnnotation(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         for span in source:
             if span.span_id in annotation_span_ids:
                 yield span
-            elif any(check_linked_span(span, links) for links in annotation_links):
+            # Only check non-empty link lists; empty links means the annotation applies only to itself
+            # (check_linked_span returns True for empty links, which would incorrectly match all spans)
+            elif any(links and check_linked_span(span, links) for links in annotation_links):
                 yield span
             # ignore the current span for now
 
@@ -526,8 +528,9 @@ class RepairMissingLinks(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
                     # The span is a candidate
                     if self.candidate_predicate(span):
                         while len(annotations_to_fill) > 0:
-                            # Fill the link
-                            annotation_span = annotations_to_fill.pop(-1)
+                            # Fill the link with the earliest-encountered annotation first (FIFO order)
+                            # This ensures each annotation links to its nearest candidate in the scan direction
+                            annotation_span = annotations_to_fill.pop(0)
                             span_id_to_link[annotation_span.span_id] = LinkPydanticModel(
                                 key_match="span_id", value_match=span.span_id
                             )

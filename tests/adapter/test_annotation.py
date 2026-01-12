@@ -788,6 +788,72 @@ def test_select_by_annotation_include_mode_with_no_annotations() -> None:
     assert len(list(result)) == 0
 
 
+def test_select_by_annotation_include_mode_with_empty_links() -> None:
+    """Include mode with annotation having empty links should only include the annotation itself.
+
+    An annotation with links=[] should apply only to itself, not to all spans.
+    This tests that check_linked_span returning True for empty links doesn't
+    cause all spans to be incorrectly selected.
+    """
+    adapter = SelectByAnnotation(mode="include")
+
+    # Annotation with no links - should only include itself
+    annotation_span = make_adapting_span(
+        "annotation",
+        AGL_ANNOTATION,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],  # Empty links!
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+    unrelated_span1 = make_adapting_span("unrelated1", "some.operation")
+    unrelated_span2 = make_adapting_span("unrelated2", "other.operation")
+
+    source = AdaptingSequence([annotation_span, unrelated_span1, unrelated_span2])
+    result = adapter.adapt(source)
+
+    span_ids = [s.span_id for s in result]
+    # Only the annotation span should be selected, not the unrelated spans
+    assert span_ids == ["annotation"]
+
+
+def test_select_by_annotation_exclude_mode_with_empty_links() -> None:
+    """Exclude mode with annotation having empty links should only exclude the annotation itself.
+
+    An annotation with links=[] should apply only to itself, so only the annotation
+    span should be excluded, not all spans.
+    """
+    adapter = SelectByAnnotation(mode="exclude")
+
+    annotation_span = make_adapting_span(
+        "annotation",
+        AGL_ANNOTATION,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],  # Empty links!
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+    unrelated_span1 = make_adapting_span("unrelated1", "some.operation")
+    unrelated_span2 = make_adapting_span("unrelated2", "other.operation")
+
+    source = AdaptingSequence([annotation_span, unrelated_span1, unrelated_span2])
+    result = adapter.adapt(source)
+
+    span_ids = [s.span_id for s in result]
+    # Only the annotation span should be excluded, unrelated spans should remain
+    assert "annotation" not in span_ids
+    assert "unrelated1" in span_ids
+    assert "unrelated2" in span_ids
+
+
 def test_select_by_annotation_exclude_mode_with_no_annotations() -> None:
     """Exclude mode with no annotations should return all spans."""
     adapter = SelectByAnnotation(mode="exclude")
@@ -1320,6 +1386,232 @@ def test_repair_missing_links_multiple_annotations_single_candidate_no_reuse() -
     # Only one annotation should get linked
     linked = [s for s in result if isinstance(s.data, GeneralAnnotation) and len(s.data.links) > 0]
     assert len(linked) == 1
+
+
+def test_repair_missing_links_backward_links_nearest_candidate() -> None:
+    """Backward scan should link each annotation to its nearest preceding candidate.
+
+    When multiple annotations appear before candidates (in chronological order),
+    the annotation closest to the candidate should get that candidate.
+
+    Chronological order: [C1, C2, A1, A2]
+    Expected: A2->C2 (nearest), A1->C1 (remaining)
+    """
+    adapter = RepairMissingLinks(scan_direction="backward", allow_reuse_linked_spans=False)
+
+    c1 = make_adapting_span("c1", "operation", start_time=0.0, end_time=1.0)
+    c2 = make_adapting_span("c2", "operation", start_time=1.0, end_time=2.0)
+    a1 = make_adapting_span(
+        "a1",
+        AGL_ANNOTATION,
+        start_time=2.0,
+        end_time=3.0,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+    a2 = make_adapting_span(
+        "a2",
+        AGL_ANNOTATION,
+        start_time=3.0,
+        end_time=4.0,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+
+    source = AdaptingSequence([c1, c2, a1, a2])
+    result = adapter.adapt(source)
+
+    # A2 (latest annotation) should link to C2 (nearest candidate before it)
+    a2_result = next(s for s in result if s.span_id == "a2")
+    assert isinstance(a2_result.data, GeneralAnnotation)
+    assert len(a2_result.data.links) == 1
+    assert a2_result.data.links[0].value_match == "c2"
+
+    # A1 should link to C1 (remaining candidate)
+    a1_result = next(s for s in result if s.span_id == "a1")
+    assert isinstance(a1_result.data, GeneralAnnotation)
+    assert len(a1_result.data.links) == 1
+    assert a1_result.data.links[0].value_match == "c1"
+
+
+def test_repair_missing_links_forward_links_nearest_candidate() -> None:
+    """Forward scan should link each annotation to its nearest following candidate.
+
+    When multiple annotations appear before candidates (in chronological order),
+    the annotation closest to the candidate should get that candidate.
+
+    Chronological order: [A1, A2, C1, C2]
+    Expected: A1->C1 (nearest), A2->C2 (remaining)
+    """
+    adapter = RepairMissingLinks(scan_direction="forward", allow_reuse_linked_spans=False)
+
+    a1 = make_adapting_span(
+        "a1",
+        AGL_ANNOTATION,
+        start_time=0.0,
+        end_time=1.0,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+    a2 = make_adapting_span(
+        "a2",
+        AGL_ANNOTATION,
+        start_time=1.0,
+        end_time=2.0,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+    c1 = make_adapting_span("c1", "operation", start_time=2.0, end_time=3.0)
+    c2 = make_adapting_span("c2", "operation", start_time=3.0, end_time=4.0)
+
+    source = AdaptingSequence([a1, a2, c1, c2])
+    result = adapter.adapt(source)
+
+    # A1 (earliest annotation) should link to C1 (nearest candidate after it)
+    a1_result = next(s for s in result if s.span_id == "a1")
+    assert isinstance(a1_result.data, GeneralAnnotation)
+    assert len(a1_result.data.links) == 1
+    assert a1_result.data.links[0].value_match == "c1"
+
+    # A2 should link to C2 (remaining candidate)
+    a2_result = next(s for s in result if s.span_id == "a2")
+    assert isinstance(a2_result.data, GeneralAnnotation)
+    assert len(a2_result.data.links) == 1
+    assert a2_result.data.links[0].value_match == "c2"
+
+
+def test_repair_missing_links_backward_interleaved() -> None:
+    """Backward scan with interleaved annotations and candidates.
+
+    Chronological order: [C1, A1, C2, A2]
+    Expected: A1->C1 (nearest before A1), A2->C2 (nearest before A2)
+    """
+    adapter = RepairMissingLinks(scan_direction="backward", allow_reuse_linked_spans=False)
+
+    c1 = make_adapting_span("c1", "operation", start_time=0.0, end_time=1.0)
+    a1 = make_adapting_span(
+        "a1",
+        AGL_ANNOTATION,
+        start_time=1.0,
+        end_time=2.0,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+    c2 = make_adapting_span("c2", "operation", start_time=2.0, end_time=3.0)
+    a2 = make_adapting_span(
+        "a2",
+        AGL_ANNOTATION,
+        start_time=3.0,
+        end_time=4.0,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+
+    source = AdaptingSequence([c1, a1, c2, a2])
+    result = adapter.adapt(source)
+
+    # A2 should link to C2 (nearest candidate before A2)
+    a2_result = next(s for s in result if s.span_id == "a2")
+    assert isinstance(a2_result.data, GeneralAnnotation)
+    assert len(a2_result.data.links) == 1
+    assert a2_result.data.links[0].value_match == "c2"
+
+    # A1 should link to C1 (nearest candidate before A1)
+    a1_result = next(s for s in result if s.span_id == "a1")
+    assert isinstance(a1_result.data, GeneralAnnotation)
+    assert len(a1_result.data.links) == 1
+    assert a1_result.data.links[0].value_match == "c1"
+
+
+def test_repair_missing_links_forward_interleaved() -> None:
+    """Forward scan with interleaved annotations and candidates.
+
+    Chronological order: [A1, C1, A2, C2]
+    Expected: A1->C1 (nearest after A1), A2->C2 (nearest after A2)
+    """
+    adapter = RepairMissingLinks(scan_direction="forward", allow_reuse_linked_spans=False)
+
+    a1 = make_adapting_span(
+        "a1",
+        AGL_ANNOTATION,
+        start_time=0.0,
+        end_time=1.0,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+    c1 = make_adapting_span("c1", "operation", start_time=1.0, end_time=2.0)
+    a2 = make_adapting_span(
+        "a2",
+        AGL_ANNOTATION,
+        start_time=2.0,
+        end_time=3.0,
+        data=GeneralAnnotation(
+            annotation_type="general",
+            links=[],
+            rewards=[],
+            primary_reward=None,
+            tags=[],
+            custom_fields={},
+        ),
+    )
+    c2 = make_adapting_span("c2", "operation", start_time=3.0, end_time=4.0)
+
+    source = AdaptingSequence([a1, c1, a2, c2])
+    result = adapter.adapt(source)
+
+    # A1 should link to C1 (nearest candidate after A1)
+    a1_result = next(s for s in result if s.span_id == "a1")
+    assert isinstance(a1_result.data, GeneralAnnotation)
+    assert len(a1_result.data.links) == 1
+    assert a1_result.data.links[0].value_match == "c1"
+
+    # A2 should link to C2 (nearest candidate after A2)
+    a2_result = next(s for s in result if s.span_id == "a2")
+    assert isinstance(a2_result.data, GeneralAnnotation)
+    assert len(a2_result.data.links) == 1
+    assert a2_result.data.links[0].value_match == "c2"
 
 
 def test_repair_missing_links_skips_annotation_spans_as_candidates() -> None:
