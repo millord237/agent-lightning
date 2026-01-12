@@ -224,7 +224,7 @@ class AdaptingSequence(BaseAdaptingSequence[T_co], Generic[T_co]):
         return AdaptingSequence([item for item in self._items if not predicate(item)])
 
 
-class AdaptingSpan(BaseAdaptingSequenceItem, Span):
+class AdaptingSpan(Span):
     """A span that has been adapted to a different format.
 
     This class extends the base [`Span`][agentlightning.Span] class to represent spans that have

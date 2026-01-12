@@ -48,6 +48,7 @@ class _TreeLikeGraph:
         self.forward_graph: Dict[str, List[str]] = defaultdict(list)
         self.parent_map: Dict[str, str] = {}
         self.root_ids: Set[str] = set()
+        self.spans_dict: Dict[str, Span] = {}
 
     def add_edge(self, from_node: str, to_node: str) -> None:
         self.forward_graph[from_node].append(to_node)
@@ -103,12 +104,11 @@ class _TreeLikeGraph:
 
         return ancestors
 
-    def to_tree(self, spans: Sequence[T_span]) -> Tree[T_span]:
-        spans_dict = {span.span_id: span for span in spans}
-
-        def build_subtree(node_id: str) -> Tree[T_span]:
+    def to_tree(self) -> Tree[AdaptingSpan]:
+        def build_subtree(node_id: str) -> Tree[AdaptingSpan]:
             children = [build_subtree(child_id) for child_id in self.forward_graph.get(node_id, [])]
-            return Tree(spans_dict[node_id], sorted(children, key=lambda child: default_span_order(child.item)))
+            item = AdaptingSpan.from_span(self.spans_dict[node_id], None)
+            return Tree(item, sorted(children, key=lambda child: default_span_order(child.item)))
 
         if len(self.root_ids) != 1:
             raise ValueError(
@@ -123,12 +123,15 @@ class _TreeLikeGraph:
 
         valid_span_ids = set(span.span_id for span in spans)
         graph.root_ids = set(span.span_id for span in spans if span.parent_id is None)
+        graph.spans_dict = {span.span_id: span for span in spans}
         for span in spans:
             if span.parent_id is not None:
                 if span.parent_id in valid_span_ids:
                     graph.forward_graph[span.parent_id].append(span.span_id)
                     graph.root_ids.discard(span.span_id)
                     graph.parent_map[span.span_id] = span.parent_id
+                    # We don't care about the wrong parent id in the spans dict
+                    # This fix here is only for graph construction
                 else:
                     # Span has invalid parent, treat as root
                     graph.root_ids.add(span.span_id)
@@ -376,8 +379,7 @@ class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
             source = self._repair_multiple_roots(source)
 
         graph = _TreeLikeGraph.from_spans(source)
-        adapting_spans = [AdaptingSpan.from_span(span, None) for span in source]
-        return graph.to_tree(adapting_spans)
+        return graph.to_tree()
 
 
 class ToAdaptingSpans(Adapter[Sequence[Span], AdaptingSequence[AdaptingSpan]]):

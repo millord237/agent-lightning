@@ -174,7 +174,7 @@ def test_tree_like_graph_to_tree_single_root():
     child2 = make_span("child2", "child", parent_id="root", start_time=5.0, end_time=9.0)
 
     graph = _TreeLikeGraph.from_spans([root, child1, child2])
-    tree = graph.to_tree([root, child1, child2])
+    tree = graph.to_tree()
 
     assert tree.item.span_id == "root"
     assert len(tree.children) == 2
@@ -189,7 +189,7 @@ def test_tree_like_graph_to_tree_multiple_roots_raises():
     graph = _TreeLikeGraph.from_spans([root1, root2])
 
     with pytest.raises(ValueError, match="multiple or no roots"):
-        graph.to_tree([root1, root2])
+        graph.to_tree()
 
 
 # Tests for ToSpans
