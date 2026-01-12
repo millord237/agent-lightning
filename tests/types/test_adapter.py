@@ -3,12 +3,50 @@
 """Tests for Tree, AdaptingSequence, and AdaptingSpan data structures."""
 
 import logging
-from typing import Any, Dict, Optional
+from collections import UserString
+from typing import Any, Dict, List, Optional
 
 import pytest
 
 from agentlightning.types import OtelResource, Span, TraceStatus
 from agentlightning.types.adapter import AdaptingSequence, AdaptingSpan, Tree
+
+
+class SequenceTestString(UserString):
+    """Simple string wrapper that implements with_container for BaseAdaptingSequenceItem."""
+
+    def with_container(self, container: Any) -> "SequenceTestString":
+        return type(self)(self.data)
+
+
+class SequenceTestInt(int):
+    """Simple int wrapper that implements with_container for BaseAdaptingSequenceItem."""
+
+    def __new__(cls, value: int) -> "SequenceTestInt":
+        return int.__new__(cls, value)
+
+    def with_container(self, container: Any) -> "SequenceTestInt":
+        return type(self)(int(self))
+
+
+def s(value: str) -> SequenceTestString:
+    """Helper to create SequenceTestString instances."""
+    return SequenceTestString(value)
+
+
+def i(value: int) -> SequenceTestInt:
+    """Helper to create SequenceTestInt instances."""
+    return SequenceTestInt(value)
+
+
+def strs(*values: str) -> list[SequenceTestString]:
+    """Helper to create lists of SequenceTestString instances."""
+    return [s(value) for value in values]
+
+
+def ints(*values: int) -> list[SequenceTestInt]:
+    """Helper to create lists of SequenceTestInt instances."""
+    return [i(value) for value in values]
 
 
 def make_span(
@@ -45,16 +83,16 @@ def make_span(
 
 
 def test_tree_single_node():
-    tree = Tree("root", [])
+    tree = Tree(s("root"), [])
     assert tree.item == "root"
     assert tree.children == []
     assert tree.parent is None
 
 
 def test_tree_with_children():
-    child1 = Tree("child1", [])
-    child2 = Tree("child2", [])
-    root = Tree("root", [child1, child2])
+    child1 = Tree(s("child1"), [])
+    child2 = Tree(s("child2"), [])
+    root = Tree(s("root"), [child1, child2])
 
     assert root.item == "root"
     assert len(root.children) == 2
@@ -63,9 +101,9 @@ def test_tree_with_children():
 
 
 def test_tree_parent_reference():
-    grandchild = Tree("grandchild", [])
-    child = Tree("child", [grandchild])
-    root = Tree("root", [child])
+    grandchild = Tree(s("grandchild"), [])
+    child = Tree(s("child"), [grandchild])
+    root = Tree(s("root"), [child])
 
     assert root.parent is None
     assert child.parent is root
@@ -73,28 +111,28 @@ def test_tree_parent_reference():
 
 
 def test_tree_len():
-    child1 = Tree("child1", [])
-    child2 = Tree("child2", [])
-    root = Tree("root", [child1, child2])
+    child1 = Tree(s("child1"), [])
+    child2 = Tree(s("child2"), [])
+    root = Tree(s("root"), [child1, child2])
     assert len(root) == 3
 
 
 def test_tree_len_deep():
-    grandchild = Tree("grandchild", [])
-    child = Tree("child", [grandchild])
-    root = Tree("root", [child])
+    grandchild = Tree(s("grandchild"), [])
+    child = Tree(s("child"), [grandchild])
+    root = Tree(s("root"), [child])
     assert len(root) == 3
 
 
 def test_tree_getitem_single():
-    root = Tree("root", [])
+    root = Tree(s("root"), [])
     assert root[0] == "root"
 
 
 def test_tree_getitem_with_children():
-    child1 = Tree("child1", [])
-    child2 = Tree("child2", [])
-    root = Tree("root", [child1, child2])
+    child1 = Tree(s("child1"), [])
+    child2 = Tree(s("child2"), [])
+    root = Tree(s("root"), [child1, child2])
     # DFS order: root, child1, child2
     assert root[0] == "root"
     assert root[1] == "child1"
@@ -102,21 +140,21 @@ def test_tree_getitem_with_children():
 
 
 def test_tree_getitem_slice():
-    child1 = Tree("child1", [])
-    child2 = Tree("child2", [])
-    root = Tree("root", [child1, child2])
+    child1 = Tree(s("child1"), [])
+    child2 = Tree(s("child2"), [])
+    root = Tree(s("root"), [child1, child2])
     assert root[1:] == ["child1", "child2"]
 
 
 def test_tree_iter():
-    child1 = Tree("child1", [])
-    child2 = Tree("child2", [])
-    root = Tree("root", [child1, child2])
+    child1 = Tree(s("child1"), [])
+    child2 = Tree(s("child2"), [])
+    root = Tree(s("root"), [child1, child2])
     assert list(root) == ["root", "child1", "child2"]
 
 
 def test_tree_traverse_single_node():
-    tree = Tree("root", [])
+    tree = Tree(s("root"), [])
     assert list(tree.traverse()) == ["root"]
 
 
@@ -126,59 +164,59 @@ def test_tree_traverse_dfs_order():
     #   child1  child2
     #     |
     #  grandchild
-    grandchild = Tree("grandchild", [])
-    child1 = Tree("child1", [grandchild])
-    child2 = Tree("child2", [])
-    root = Tree("root", [child1, child2])
+    grandchild = Tree(s("grandchild"), [])
+    child1 = Tree(s("child1"), [grandchild])
+    child2 = Tree(s("child2"), [])
+    root = Tree(s("root"), [child1, child2])
 
     # DFS order: root, child1, grandchild, child2
     assert list(root.traverse()) == ["root", "child1", "grandchild", "child2"]
 
 
 def test_tree_size_single_node():
-    tree = Tree("root", [])
+    tree = Tree(s("root"), [])
     assert tree.size() == 1
 
 
 def test_tree_size_with_children():
-    grandchild = Tree("grandchild", [])
-    child1 = Tree("child1", [grandchild])
-    child2 = Tree("child2", [])
-    root = Tree("root", [child1, child2])
+    grandchild = Tree(s("grandchild"), [])
+    child1 = Tree(s("child1"), [grandchild])
+    child2 = Tree(s("child2"), [])
+    root = Tree(s("root"), [child1, child2])
     assert root.size() == 4
 
 
 def test_tree_map_single_node():
-    tree = Tree(1, [])
-    mapped = tree.map(lambda x: x * 2)
+    tree = Tree(i(1), [])
+    mapped = tree.map(lambda x: type(x)(x * 2))
     assert mapped.item == 2
     assert mapped.children == []
 
 
 def test_tree_map_with_children():
-    child1 = Tree(2, [])
-    child2 = Tree(3, [])
-    root = Tree(1, [child1, child2])
+    child1 = Tree(i(2), [])
+    child2 = Tree(i(3), [])
+    root = Tree(i(1), [child1, child2])
 
-    mapped = root.map(lambda x: x * 10)
+    mapped = root.map(lambda x: type(x)(x * 10))
     assert mapped.item == 10
     assert mapped.children[0].item == 20
     assert mapped.children[1].item == 30
 
 
 def test_tree_map_preserves_structure():
-    grandchild = Tree("gc", [])
-    child = Tree("c", [grandchild])
-    root = Tree("r", [child])
+    grandchild = Tree(s("gc"), [])
+    child = Tree(s("c"), [grandchild])
+    root = Tree(s("r"), [child])
 
-    mapped = root.map(str.upper)
+    mapped = root.map(lambda x: type(x)(x.upper()))
     assert mapped.item == "R"
     assert mapped.children[0].item == "C"
     assert mapped.children[0].children[0].item == "GC"
 
 
 def test_tree_retain_keeps_root_always():
-    tree = Tree("root", [])
+    tree = Tree(s("root"), [])
     retained = tree.retain(lambda x: False)
     assert retained.item == "root"
     assert retained.children == []
@@ -190,10 +228,10 @@ def test_tree_retain_keeps_matching_subtrees():
     #   keep1   drop1
     #     |
     #    drop2
-    drop2 = Tree("drop2", [])
-    keep1 = Tree("keep1", [drop2])
-    drop1 = Tree("drop1", [])
-    root = Tree("root", [keep1, drop1])
+    drop2 = Tree(s("drop2"), [])
+    keep1 = Tree(s("keep1"), [drop2])
+    drop1 = Tree(s("drop1"), [])
+    root = Tree(s("root"), [keep1, drop1])
 
     # Retain subtrees rooted at nodes containing "keep"
     retained = root.retain(lambda x: "keep" in x)
@@ -210,10 +248,10 @@ def test_tree_retain_removes_branches_without_matches():
     #     drop1  drop2
     #       |
     #     keep
-    keep = Tree("keep", [])
-    drop1 = Tree("drop1", [keep])
-    drop2 = Tree("drop2", [])
-    root = Tree("root", [drop1, drop2])
+    keep = Tree(s("keep"), [])
+    drop1 = Tree(s("drop1"), [keep])
+    drop2 = Tree(s("drop2"), [])
+    root = Tree(s("root"), [drop1, drop2])
 
     retained = root.retain(lambda x: x == "keep")
 
@@ -231,10 +269,10 @@ def test_tree_retain_deep_tree():
     #        b (keep)
     #         |
     #        c
-    c = Tree("c", [])
-    b = Tree("b", [c])
-    a = Tree("a", [b])
-    root = Tree("root", [a])
+    c = Tree(s("c"), [])
+    b = Tree(s("b"), [c])
+    a = Tree(s("a"), [b])
+    root = Tree(s("root"), [a])
 
     retained = root.retain(lambda x: x == "b")
     # When b matches, the entire subtree rooted at b (including c) is retained
@@ -242,15 +280,15 @@ def test_tree_retain_deep_tree():
 
 
 def test_tree_prune_does_not_remove_root():
-    tree = Tree("root", [])
+    tree = Tree(s("root"), [])
     pruned = tree.prune(lambda x: x == "root")
     assert pruned.item == "root"
 
 
 def test_tree_prune_removes_matching_children():
-    child1 = Tree("remove_me", [])
-    child2 = Tree("keep_me", [])
-    root = Tree("root", [child1, child2])
+    child1 = Tree(s("remove_me"), [])
+    child2 = Tree(s("keep_me"), [])
+    root = Tree(s("root"), [child1, child2])
 
     pruned = root.prune(lambda x: x == "remove_me")
 
@@ -265,10 +303,10 @@ def test_tree_prune_removes_subtrees():
     #   remove  keep
     #     |
     #   child_of_remove
-    child_of_remove = Tree("child_of_remove", [])
-    remove = Tree("remove", [child_of_remove])
-    keep = Tree("keep", [])
-    root = Tree("root", [remove, keep])
+    child_of_remove = Tree(s("child_of_remove"), [])
+    remove = Tree(s("remove"), [child_of_remove])
+    keep = Tree(s("keep"), [])
+    root = Tree(s("root"), [remove, keep])
 
     pruned = root.prune(lambda x: x == "remove")
 
@@ -283,10 +321,10 @@ def test_tree_prune_recursive():
     #        keep
     #       /    \
     #    remove  keep2
-    keep2 = Tree("keep2", [])
-    remove = Tree("remove", [])
-    keep = Tree("keep", [remove, keep2])
-    root = Tree("root", [keep])
+    keep2 = Tree(s("keep2"), [])
+    remove = Tree(s("remove"), [])
+    keep = Tree(s("keep"), [remove, keep2])
+    root = Tree(s("root"), [keep])
 
     pruned = root.prune(lambda x: x == "remove")
 
@@ -302,126 +340,126 @@ def test_tree_prune_recursive():
 
 
 def test_adapting_sequence_empty():
-    seq = AdaptingSequence([])
+    seq = AdaptingSequence[Any]([])
     assert len(seq) == 0
     assert list(seq) == []
 
 
 def test_adapting_sequence_with_items():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     assert len(seq) == 3
     assert list(seq) == [1, 2, 3]
 
 
 def test_adapting_sequence_getitem_single():
-    seq = AdaptingSequence(["a", "b", "c"])
+    seq = AdaptingSequence(strs("a", "b", "c"))
     assert seq[0] == "a"
     assert seq[1] == "b"
     assert seq[2] == "c"
 
 
 def test_adapting_sequence_getitem_negative_index():
-    seq = AdaptingSequence(["a", "b", "c"])
+    seq = AdaptingSequence(strs("a", "b", "c"))
     assert seq[-1] == "c"
 
 
 def test_adapting_sequence_getitem_slice():
-    seq = AdaptingSequence(["a", "b", "c", "d"])
+    seq = AdaptingSequence(strs("a", "b", "c", "d"))
     assert seq[1:3] == ["b", "c"]
 
 
 def test_adapting_sequence_iter():
-    seq = AdaptingSequence([1, 2, 3])
-    result = []
+    seq = AdaptingSequence(ints(1, 2, 3))
+    result: List[Any] = []
     for item in seq:
         result.append(item)
     assert result == [1, 2, 3]
 
 
 def test_adapting_sequence_traverse():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     assert list(seq.traverse()) == [1, 2, 3]
 
 
 def test_adapting_sequence_size():
-    seq = AdaptingSequence([1, 2, 3, 4])
+    seq = AdaptingSequence(ints(1, 2, 3, 4))
     assert seq.size() == 4
 
 
 def test_adapting_sequence_get():
-    seq = AdaptingSequence(["x", "y", "z"])
+    seq = AdaptingSequence(strs("x", "y", "z"))
     assert seq.get(0) == "x"
     assert seq.get(1) == "y"
 
 
 def test_adapting_sequence_map_empty():
-    seq = AdaptingSequence([])
-    mapped = seq.map(lambda x: x * 2)
+    seq = AdaptingSequence[Any]([])
+    mapped = seq.map(lambda x: type(x)(x * 2))
     assert list(mapped) == []
 
 
 def test_adapting_sequence_map_integers():
-    seq = AdaptingSequence([1, 2, 3])
-    mapped = seq.map(lambda x: x * 2)
+    seq = AdaptingSequence(ints(1, 2, 3))
+    mapped = seq.map(lambda x: type(x)(x * 2))
     assert list(mapped) == [2, 4, 6]
 
 
 def test_adapting_sequence_map_strings():
-    seq = AdaptingSequence(["a", "b", "c"])
-    mapped = seq.map(str.upper)
+    seq = AdaptingSequence(strs("a", "b", "c"))
+    mapped = seq.map(lambda x: type(x)(x.upper()))
     assert list(mapped) == ["A", "B", "C"]
 
 
 def test_adapting_sequence_map_returns_adapting_sequence():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     mapped = seq.map(lambda x: x)
     assert isinstance(mapped, AdaptingSequence)
 
 
 def test_adapting_sequence_retain_all():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     retained = seq.retain(lambda x: True)
     assert list(retained) == [1, 2, 3]
 
 
 def test_adapting_sequence_retain_none():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     retained = seq.retain(lambda x: False)
     assert list(retained) == []
 
 
 def test_adapting_sequence_retain_some():
-    seq = AdaptingSequence([1, 2, 3, 4, 5])
+    seq = AdaptingSequence(ints(1, 2, 3, 4, 5))
     retained = seq.retain(lambda x: x % 2 == 0)
     assert list(retained) == [2, 4]
 
 
 def test_adapting_sequence_retain_returns_adapting_sequence():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     retained = seq.retain(lambda x: True)
     assert isinstance(retained, AdaptingSequence)
 
 
 def test_adapting_sequence_prune_none():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     pruned = seq.prune(lambda x: False)
     assert list(pruned) == [1, 2, 3]
 
 
 def test_adapting_sequence_prune_all():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     pruned = seq.prune(lambda x: True)
     assert list(pruned) == []
 
 
 def test_adapting_sequence_prune_some():
-    seq = AdaptingSequence([1, 2, 3, 4, 5])
+    seq = AdaptingSequence(ints(1, 2, 3, 4, 5))
     pruned = seq.prune(lambda x: x % 2 == 0)
     assert list(pruned) == [1, 3, 5]
 
 
 def test_adapting_sequence_prune_returns_adapting_sequence():
-    seq = AdaptingSequence([1, 2, 3])
+    seq = AdaptingSequence(ints(1, 2, 3))
     pruned = seq.prune(lambda x: False)
     assert isinstance(pruned, AdaptingSequence)
 

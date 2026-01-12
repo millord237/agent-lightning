@@ -9,26 +9,36 @@ from typing import Sequence
 from agentlightning.types.adapter import (
     AccumulatedMessages,
     AccumulatedTokenSequence,
+    AdaptingSpan,
     AnnotatedChatCompletionCall,
+    BaseAdaptingSequence,
     TokenInputOutputTriplet,
 )
 
 from .base import Adapter
 
 
-class AccumulateTokenSequence(Adapter[Sequence[TokenInputOutputTriplet], Sequence[AccumulatedTokenSequence]]):
+class ToTokensTriplets(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[TokenTriplet]]):
+    """Convert adapting spans to token input-output triplets."""
+
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[TokenInputOutputTriplet]: ...
+
+
+class ToTokensAccumulations(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[TokensAccumulation]]):
     """Assemble multiple token input-output triplets into accumulated token sequences."""
 
-    def adapt(self, source: Sequence[TokenInputOutputTriplet]) -> Sequence[AccumulatedTokenSequence]: ...
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[AccumulatedTokenSequence]: ...
 
 
-class AccumulateMessages(Adapter[Sequence[AnnotatedChatCompletionCall], Sequence[AccumulatedMessages]]):
-    """Assemble multiple token input-output triplets into accumulated chat messages."""
+class ToPromptCompletionTriplets(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[PromptCompletionTriplet]]):
+    """Convert annotated chat completion calls to prompt-completion triplets."""
 
-    def adapt(self, source: Sequence[AnnotatedChatCompletionCall]) -> Sequence[AccumulatedMessages]: ...
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[PromptCompletionTriplet]: ...
 
 
-class ToTokenInputOutputTriplet(Adapter[Sequence[AnnotatedChatCompletionCall], Sequence[TokenInputOutputTriplet]]):
-    """Convert annotated chat completion calls to token input-output triplets."""
+class ToPromptCompletionAccumulations(
+    Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[PromptCompletionAccumulation]]
+):
+    """Assemble multiple prompt-completion triplets into accumulated prompt-completion pairs."""
 
-    def adapt(self, source: Sequence[AnnotatedChatCompletionCall]) -> Sequence[TokenInputOutputTriplet]: ...
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[PromptCompletionAccumulation]: ...
