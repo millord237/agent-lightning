@@ -104,6 +104,9 @@ class Tree(BaseAdaptingSequence[T_co], Generic[T_co]):
         self._parent: Optional[weakref.ReferenceType[Tree[T_co]]] = None
         for child in self._children:
             child._parent = weakref.ref(self)  # type: ignore
+        # Set container reference on the item if it supports it (e.g., AdaptingSpan)
+        if hasattr(item, "container"):
+            object.__setattr__(item, "container", self)
 
     @property
     def item(self) -> T_co:

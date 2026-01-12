@@ -51,6 +51,10 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         response = filter_and_unflatten_attributes(span.attributes, "gen_ai.response")
         if not isinstance(response, dict):
             raise ValueError(f"Invalid response format in span attributes: {response}")
+        if "created" not in response:
+            response["created"] = int(span.ensure_end_time())
+        if "object" not in response:
+            response["object"] = "chat.completion"
         return response
 
     def _parse_completion_choices(self, span: AdaptingSpan) -> List[Dict[str, Any]]:
@@ -109,6 +113,12 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         usages = filter_and_unflatten_attributes(span.attributes, "gen_ai.usage")
         if not isinstance(usages, dict):
             raise ValueError(f"Invalid usages format in span attributes: {usages}")
+        if "prompt_tokens" not in usages:
+            usages["prompt_tokens"] = 0
+        if "completion_tokens" not in usages:
+            usages["completion_tokens"] = 0
+        if "total_tokens" not in usages:
+            usages["total_tokens"] = usages["prompt_tokens"] + usages["completion_tokens"]
         return usages
 
     def _parse_agentops_tool_calls(self, span: Span) -> Optional[Dict[str, Any]]:
@@ -159,8 +169,6 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         response = ChatCompletion.model_validate(
             {
                 **response_metadata,
-                "object": "chat.completion",
-                "created": int(span.ensure_end_time()),
                 "choices": completion_choices,
                 "usage": usages,
             }
