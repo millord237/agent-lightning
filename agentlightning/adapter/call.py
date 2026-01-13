@@ -12,7 +12,7 @@ from openai.types.chat import (
     ChatCompletion,
     CompletionCreateParams,
 )
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 
 from agentlightning.types.adapter import (
     AdaptingSpan,
@@ -24,6 +24,7 @@ from agentlightning.types.adapter import (
 )
 from agentlightning.types.tracer import Span
 from agentlightning.utils.otel import filter_and_unflatten_attributes, query_linked_spans
+from agentlightning.utils.pydantic import to_plain_object
 
 from .base import SequenceAdapter
 
@@ -137,26 +138,7 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
 
     def _normalize_request(self, request_body: Dict[str, Any]) -> CompletionCreateParams:
         validated_request = CompletionCreateParamsType.validate_python(request_body)
-
-        def _to_plain_object(object: Any, path: List[str]) -> Any:
-            if type(object).__name__ == "ValidatorIterator":
-                try:
-                    return [_to_plain_object(item, path + [str(i)]) for i, item in enumerate(object)]
-                except ValidationError as exc:
-                    raise ValueError(
-                        "Failed to convert ValidatorIterator to list.\n"
-                        "ValidatorIterator path (see below for subpath): " + ".".join(path) + "\nError: " + str(exc)
-                    ) from exc
-            elif isinstance(object, dict):
-                return {k: _to_plain_object(v, path + [k]) for k, v in object.items()}  # type: ignore
-            elif isinstance(object, list):
-                return [_to_plain_object(item, path + [str(i)]) for i, item in enumerate(object)]  # type: ignore
-            elif isinstance(object, tuple):
-                return tuple(_to_plain_object(item, path + [str(i)]) for i, item in enumerate(object))  # type: ignore
-            else:
-                return object
-
-        return _to_plain_object(validated_request, [])
+        return to_plain_object(validated_request, [])
 
     def _parse_openai_chat_completion_create(self, span: AdaptingSpan) -> ChatCompletionCall:
         prompt_messages = self._parse_prompt_messages(span)

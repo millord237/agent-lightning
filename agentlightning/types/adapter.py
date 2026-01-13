@@ -24,8 +24,8 @@ from typing import (
 
 from openai.types.chat import (
     ChatCompletion,
-    ChatCompletionFunctionToolParam,
     ChatCompletionMessageParam,
+    ChatCompletionToolUnionParam,
     CompletionCreateParams,
 )
 from pydantic import BaseModel, Field, model_validator
@@ -462,7 +462,7 @@ class Triplet(Generic[T_observation, T_action], BaseModel):
     observation: T_observation
     """Observation for the model input."""
 
-    completion: T_action
+    action: T_action
     """Action from the model output."""
 
     reward: Optional[float]
@@ -574,7 +574,7 @@ class TokensAccumulation(Accumulation):
     """Diagnosis information for token accumulation mismatches."""
 
 
-class PromptCompletionTriplet(Triplet[Sequence[ChatCompletionMessageParam], ChatCompletion]):
+class PromptCompletionTriplet(Triplet[CompletionCreateParams, ChatCompletion]):
     """A triplet of prompt and completion."""
 
 
@@ -584,5 +584,5 @@ class PromptCompletionAccumulation(Accumulation):
     messages: Sequence[ChatCompletionMessageParam]
     """Messages of the conversation."""
 
-    tools: Optional[Sequence[ChatCompletionFunctionToolParam]]
+    tools: Optional[Sequence[ChatCompletionToolUnionParam]]
     """Tools provided for the conversation."""
