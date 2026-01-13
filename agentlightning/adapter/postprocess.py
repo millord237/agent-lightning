@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Literal, Optional, Sequence, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Any, Iterable, List, Literal, Optional, Sequence, TypeVar, Union, cast
 
 from agentlightning.types.adapter import (
     AdaptingSpan,
@@ -17,8 +17,12 @@ from agentlightning.types.adapter import (
     TokenInput,
     TokenOutput,
     TokensAccumulation,
+    TokensAccumulationDiagnosis,
     TokensTriplet,
 )
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizer
 
 from .base import Adapter
 
@@ -28,16 +32,7 @@ T_triplet_or_accumulation = TypeVar(
 )
 
 
-class ToTokensTriplets(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[TokensTriplet]]):
-    """Convert adapting spans to token input-output triplets.
-
-    Args:
-        strict: Whether to raise an exception if the triplet cannot be created.
-            If False, the exception will be added to the list of exceptions and the triplet will be skipped.
-            The exceptions will also be raised when the resulting sequence is empty.
-            If True, the exception will be raised.
-            Default is False.
-    """
+class TokensTripletMixin:
 
     def __init__(self, strict: bool = False):
         self.strict = strict
@@ -101,7 +96,7 @@ class ToTokensTriplets(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[Toke
                     return annotation.primary_reward
         return None
 
-    def _to_tokens_triplet(
+    def to_triplet(
         self, call: Union[AnnotatedChatCompletionCall, ChatCompletionCall]
     ) -> Union[TokensTriplet, BaseException]:
         try:
@@ -121,12 +116,12 @@ class ToTokensTriplets(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[Toke
                 raise exc
             return exc
 
-    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[TokensTriplet]:
+    def to_triplets(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[TokensTriplet]:
         exceptions: List[BaseException] = []
         triplets: List[TokensTriplet] = []
         for span in source:
             if isinstance(span.data, (AnnotatedChatCompletionCall, ChatCompletionCall)):
-                triplet = self._to_tokens_triplet(span.data)
+                triplet = self.to_triplet(span.data)
                 if isinstance(triplet, BaseException):
                     exceptions.append(triplet)
                 else:
@@ -134,17 +129,170 @@ class ToTokensTriplets(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[Toke
         if len(triplets) == 0:
             error_msg = (
                 f"{self.__class__.__name__} failed to create any triplets. "
-                "The adapter has raised {len(exceptions)} exceptions when processing the spans:\n"
+                f"The adapter has raised {len(exceptions)} exceptions when processing the spans:\n"
                 + "\n".join([f"  - {exc}" for exc in exceptions])
             )
             raise RuntimeError(error_msg)
+        triplets[-1] = triplets[-1].model_copy(update={"done": True})
         return triplets
 
 
-class ToTokensAccumulations(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[TokensAccumulation]]):
-    """Assemble multiple token input-output triplets into accumulated token sequences."""
+class ToTokensTriplets(TokensTripletMixin, Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[TokensTriplet]]):
+    """Convert adapting spans to token input-output triplets.
 
-    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[TokensAccumulation]: ...
+    Args:
+        strict: Whether to raise an exception if the triplet cannot be created.
+            If False, the exception will be added to the list of exceptions and the triplet will be skipped.
+            The exceptions will also be raised when the resulting sequence is empty.
+            If True, the exception will be raised.
+            Default is False.
+    """
+
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[TokensTriplet]:
+        return self.to_triplets(source)
+
+
+class ToTokensAccumulations(
+    TokensTripletMixin, Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[TokensAccumulation]]
+):
+    """Assemble multiple token input-output triplets into accumulated token sequences.
+
+    Args:
+        diagnosis: Whether to include diagnosis information in the resulting TokensAccumulation.
+        strict: Whether to raise an exception if the triplet cannot be created.
+            If False, the exception will be added to the list of exceptions and the triplet will be skipped.
+            The exceptions will also be raised when the resulting sequence is empty.
+            If True, the exception will be raised.
+            Default is False.
+        tokenizer: An optional tokenizer to decode token IDs to text for diagnosis.
+    """
+
+    def __init__(self, strict: bool = False, diagnosis: bool = False, tokenizer: Optional[PreTrainedTokenizer] = None):
+        super().__init__(strict=strict)
+        self.diagnosis = diagnosis
+        self.tokenizer = tokenizer
+
+    def _triplet_to_accumulation(
+        self, triplet: TokensTriplet, diagnosis_info: Optional[TokensAccumulationDiagnosis]
+    ) -> TokensAccumulation:
+        if triplet.completion.logprobs is not None:
+            logprobs = [0.0] * len(triplet.observation.token_ids) + list(triplet.completion.logprobs)
+        else:
+            logprobs = None
+
+        return TokensAccumulation(
+            token_ids=[*triplet.observation.token_ids, *triplet.completion.token_ids],
+            image_urls=triplet.observation.image_urls,
+            logprobs=logprobs,
+            response_mask=[0] * len(triplet.observation.token_ids) + [1] * len(triplet.completion.token_ids),
+            final_reward=triplet.reward,
+            raw_calls=[triplet.raw_call],
+            diagnosis_info=diagnosis_info,
+        )
+
+    def _special_token_sequence(self, ids: Sequence[int]) -> List[int]:
+        assert self.tokenizer is not None, "Tokenizer must be provided for special token sequence extraction."
+        return [id for id in ids if id in self.tokenizer.all_special_ids]
+
+    def _non_special_token_sequence(self, ids: Sequence[int]) -> List[int]:
+        assert self.tokenizer is not None, "Tokenizer must be provided for non-special token sequence extraction."
+        return [id for id in ids if id not in self.tokenizer.all_special_ids]
+
+    def _diagnose_mismatch(
+        self, prev: TokensAccumulation, next: TokensTriplet
+    ) -> Optional[TokensAccumulationDiagnosis]:
+        if not self.diagnosis:
+            return None
+
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer must be provided for diagnosis.")
+
+        image_urls_match = self.is_prefix(prev.image_urls, next.observation.image_urls)
+
+        # Check whether the special tokens match
+        next_special_ids = self._special_token_sequence(next.observation.token_ids)
+        prev_special_ids = self._special_token_sequence(prev.token_ids)
+        special_tokens_match = self.is_prefix(prev_special_ids, next_special_ids)
+
+        # Check whether the non-special tokens match
+        next_non_special_ids = self._non_special_token_sequence(next.observation.token_ids)
+        prev_non_special_ids = self._non_special_token_sequence(prev.token_ids)
+        non_special_tokens_match = self.is_prefix(prev_non_special_ids, next_non_special_ids)
+
+        # Check whether the detokenized text matches
+        next_string = self.tokenizer.decode(next.observation.token_ids, skip_special_tokens=True)  # type: ignore
+        prev_string = self.tokenizer.decode(prev.token_ids, skip_special_tokens=True)  # type: ignore
+        detokenized_text_match = next_string.startswith(prev_string)
+
+        return TokensAccumulationDiagnosis(
+            special_tokens_mismatch=not special_tokens_match,
+            non_special_tokens_mismatch=not non_special_tokens_match,
+            detokenized_text_mismatch=not detokenized_text_match,
+            image_urls_mismatch=not image_urls_match,
+            accumulation_prev=prev,
+            special_tokens_prev=prev_special_ids,
+            special_tokens_next=next_special_ids,
+            detokenized_text_prev=prev_string,
+            detokenized_text_next=next_string,
+        )
+
+    @staticmethod
+    def is_prefix(shorter: Iterable[Any], longer: Iterable[Any]) -> bool:
+        """Check if the shorter sequence is a prefix of the longer sequence."""
+        longer_iter = iter(longer)
+        for item in shorter:
+            try:
+                expected_item = next(longer_iter)
+                if item != expected_item:
+                    return False
+            except StopIteration:
+                return False
+        return True
+
+    def _attempt_to_merge(self, prev: TokensAccumulation, next: TokensTriplet) -> List[TokensAccumulation]:
+        # Check if we can merge the next triplet into the previous accumulation
+        if not self.is_prefix(prev.image_urls, next.observation.image_urls):
+            return [prev, self._triplet_to_accumulation(next, self._diagnose_mismatch(prev, next))]
+        # Merge token ids
+        if not self.is_prefix(prev.token_ids, next.observation.token_ids):
+            return [prev, self._triplet_to_accumulation(next, self._diagnose_mismatch(prev, next))]
+        tokens_to_add = [*next.observation.token_ids[len(prev.token_ids) :], *next.completion.token_ids]
+        if prev.logprobs is not None and next.completion.logprobs is not None:
+            new_logprobs = list(prev.logprobs) + [0.0] * len(tokens_to_add) + list(next.completion.logprobs)
+        else:
+            new_logprobs = None
+        response_mask_to_add = [0] * (len(next.observation.token_ids) - len(prev.token_ids)) + [1] * len(
+            next.completion.token_ids
+        )
+        new_reward = (
+            (prev.final_reward or 0.0) + (next.reward or 0.0)
+            if next.reward is not None or prev.final_reward is not None
+            else None
+        )
+
+        return [
+            TokensAccumulation(
+                token_ids=[*prev.token_ids, *tokens_to_add],
+                image_urls=next.observation.image_urls,
+                logprobs=new_logprobs,
+                response_mask=[*prev.response_mask, *response_mask_to_add],
+                final_reward=new_reward,
+                raw_calls=[*prev.raw_calls, next.raw_call],
+                diagnosis_info=None,
+            )
+        ]
+
+    def adapt(self, source: BaseAdaptingSequence[AdaptingSpan]) -> Sequence[TokensAccumulation]:
+        triplets = self.to_triplets(source)
+
+        accumulations: List[TokensAccumulation] = []
+        for triplet in triplets:
+            if not accumulations:
+                accumulations.append(self._triplet_to_accumulation(triplet, None))
+            else:
+                last_accumulation = accumulations[-1]
+                accumulations = accumulations[:-1] + self._attempt_to_merge(last_accumulation, triplet)
+        return accumulations
 
 
 class ToPromptCompletionTriplets(Adapter[BaseAdaptingSequence[AdaptingSpan], Sequence[PromptCompletionTriplet]]):

@@ -522,6 +522,36 @@ class TokensTriplet(Triplet[TokenInput, TokenOutput]):
     """
 
 
+class TokensAccumulationDiagnosis(BaseModel):
+
+    special_tokens_mismatch: bool
+    """Whether there is a mismatch in special tokens."""
+
+    non_special_tokens_mismatch: bool
+    """Whether there is a mismatch in non-special tokens."""
+
+    detokenized_text_mismatch: bool
+    """Whether there is a mismatch in detokenized text."""
+
+    image_urls_mismatch: bool
+    """Whether there is a mismatch in image URLs."""
+
+    accumulation_prev: TokensAccumulation
+    """The previous accumulation which this triplet fails to match."""
+
+    special_tokens_prev: Sequence[int]
+    """Special tokens in the previous accumulation."""
+
+    special_tokens_next: Sequence[int]
+    """Special tokens in the next sequence."""
+
+    detokenized_text_prev: str
+    """Detokenized text in the previous accumulation."""
+
+    detokenized_text_next: str
+    """Detokenized text in the next sequence."""
+
+
 class TokensAccumulation(Accumulation):
     """A sequence of token IDs that are accumulated from multiple model calls.
 
@@ -539,6 +569,9 @@ class TokensAccumulation(Accumulation):
 
     response_mask: Sequence[int]
     """Mask for the response tokens. Must a sequence of 0s and 1s, with 1s for the completion tokens and 0s for the prompt tokens."""
+
+    diagnosis_info: Optional[TokensAccumulationDiagnosis]
+    """Diagnosis information for token accumulation mismatches."""
 
 
 class PromptCompletionTriplet(Triplet[Sequence[ChatCompletionMessageParam], ChatCompletion]):
