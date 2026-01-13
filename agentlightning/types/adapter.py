@@ -452,6 +452,41 @@ class AnnotatedChatCompletionCall(ChatCompletionCall):
 
 # Algorithm-specific requirements
 
+T_observation = TypeVar("T_observation")
+T_action = TypeVar("T_action")
+
+
+class Triplet(Generic[T_observation, T_action], BaseModel):
+    """A triplet of observation, action and reward."""
+
+    observation: T_observation
+    """Observation for the model input."""
+
+    completion: T_action
+    """Action from the model output."""
+
+    reward: Optional[float]
+    """Reward of the model input."""
+
+    done: bool
+    """Whether it's the end of the trajectory."""
+
+    raw_call: Union[AnnotatedChatCompletionCall, ChatCompletionCall]
+    """Raw chat completion call."""
+
+
+class Accumulation(BaseModel):
+    """Accumulation from multiple triplets."""
+
+    final_reward: Optional[float]
+    """Single reward value for the entire sequence.
+
+    An accumulation can only have one single final reward value.
+    """
+
+    raw_calls: Sequence[Union[AnnotatedChatCompletionCall, ChatCompletionCall]]
+    """Raw chat completion calls. The order of the calls must be the same as the order of the token IDs."""
+
 
 class TokenInput(BaseModel):
     """Token-based model input."""
@@ -459,7 +494,7 @@ class TokenInput(BaseModel):
     token_ids: Sequence[int]
     """Token IDs of the model input."""
 
-    image_urls: Any
+    image_urls: Sequence[str]
     """A list of image URLs. Could be pointers to local files or base64-encoded images."""
 
 
@@ -469,46 +504,41 @@ class TokenOutput(BaseModel):
     token_ids: Sequence[int]
     """Token IDs of the model output."""
 
+    logprobs: Optional[Sequence[float]]
+    """Log probabilities of the model output."""
 
-class TokenInputOutputTriplet(BaseModel):
+
+class TokensTriplet(Triplet[TokenInput, TokenOutput]):
     """A triplet of token IDs for the input and output, useful for reinforcement learning.
 
     This is not a stable interface and the fields here highly depend on RL implementations.
     """
 
-    observation: TokenInput
-    """Observation for the model input. Corresponding to prompt."""
 
-    action: TokenOutput
-    """Action, corresponding to completion result."""
-
-    reward: Optional[float]
-    """Reward of the model input."""
-
-    done: bool
-    """Whether it's the end of the trajectory."""
-
-    raw_call: AnnotatedChatCompletionCall
-    """Raw chat completion call."""
-
-
-class AccumulatedTokenSequence(TokenInput):
+class TokensAccumulation(Accumulation):
     """A sequence of token IDs that are accumulated from multiple model calls.
 
     Output is implied in the token IDs.
     """
 
+    token_ids: Sequence[int]
+    """Token IDs of the model input and output."""
+
+    image_urls: Sequence[str]
+    """Image URLs of the model input and output."""
+
+    logprobs: Optional[Sequence[float]]
+    """Log probabilities of the model output."""
+
     response_mask: Sequence[int]
     """Mask for the response tokens. Must a sequence of 0s and 1s, with 1s for the completion tokens and 0s for the prompt tokens."""
 
-    final_reward: Optional[float]
-    """Single reward value for the entire sequence."""
 
-    raw_calls: Sequence[AnnotatedChatCompletionCall]
-    """Raw chat completion calls. The order of the calls must be the same as the order of the token IDs."""
+class PromptCompletionTriplet(Triplet[Sequence[ChatCompletionMessageParam], ChatCompletionCall]):
+    """A triplet of prompt and completion."""
 
 
-class AccumulatedMessages(BaseModel):
+class PromptCompletionAccumulation(Accumulation):
     """A conversation that is accumulated from multiple model calls."""
 
     messages: Sequence[ChatCompletionMessageParam]
@@ -516,9 +546,3 @@ class AccumulatedMessages(BaseModel):
 
     tools: Optional[Sequence[ChatCompletionFunctionToolParam]]
     """Tools provided for the conversation."""
-
-    final_reward: Optional[float]
-    """Single reward value for the entire conversation."""
-
-    raw_calls: Sequence[AnnotatedChatCompletionCall]
-    """Raw chat completion calls. The order of the calls must be the same as the order of the messages."""
