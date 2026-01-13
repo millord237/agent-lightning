@@ -165,19 +165,13 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
         usages = self._parse_usages(span)
         response_metadata = self._parse_response(span)
 
-        request = self._normalize_request({"messages": prompt_messages, **request_metadata})
-        response = ChatCompletion.model_validate(
+        return self._construct_chat_completion_call(
+            {"messages": prompt_messages, **request_metadata},
             {
                 **response_metadata,
                 "choices": completion_choices,
                 "usage": usages,
-            }
-        )
-
-        return ChatCompletionCall.model_construct(
-            request=request,
-            response=response,
-            malformed_fields={},  # TODO: malformed fields
+            },
         )
 
     def _augment_litellm_raw_gen_ai_request(
@@ -223,12 +217,16 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
             if sibling.name == "raw_gen_ai_request":
                 self._augment_litellm_raw_gen_ai_request(sibling, request_body, response_body)
 
-        return ChatCompletionCall(
-            request=cast(
-                CompletionCreateParams,
-                TypeAdapter(CompletionCreateParams).validate_python(request_body),
-            ),
-            response=ChatCompletion.model_validate(response_body),
+        return self._construct_chat_completion_call(request_body, response_body)
+
+    def _construct_chat_completion_call(
+        self, request_body: Dict[str, Any], response_body: Dict[str, Any]
+    ) -> ChatCompletionCall:
+        request = self._normalize_request(request_body)
+        response = ChatCompletion.model_validate(response_body, extra="allow")
+        return ChatCompletionCall.model_construct(
+            request=request,
+            response=response,
             malformed_fields={},  # TODO: malformed fields
         )
 

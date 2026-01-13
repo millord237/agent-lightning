@@ -28,7 +28,7 @@ from openai.types.chat import (
     ChatCompletionMessageParam,
     CompletionCreateParams,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Self
 
 from agentlightning.semconv import LinkPydanticModel, RewardPydanticModel
@@ -507,6 +507,13 @@ class TokenOutput(BaseModel):
     logprobs: Optional[Sequence[float]]
     """Log probabilities of the model output."""
 
+    @model_validator(mode="after")
+    def validate_logprobs(self) -> Self:
+        if self.logprobs is not None:
+            if len(self.logprobs) != len(self.token_ids):
+                raise ValueError("Log probabilities must be the same length as the token IDs.")
+        return self
+
 
 class TokensTriplet(Triplet[TokenInput, TokenOutput]):
     """A triplet of token IDs for the input and output, useful for reinforcement learning.
@@ -534,7 +541,7 @@ class TokensAccumulation(Accumulation):
     """Mask for the response tokens. Must a sequence of 0s and 1s, with 1s for the completion tokens and 0s for the prompt tokens."""
 
 
-class PromptCompletionTriplet(Triplet[Sequence[ChatCompletionMessageParam], ChatCompletionCall]):
+class PromptCompletionTriplet(Triplet[Sequence[ChatCompletionMessageParam], ChatCompletion]):
     """A triplet of prompt and completion."""
 
 
