@@ -124,15 +124,23 @@ class IdentifyChatCompletionCalls(SequenceAdapter[AdaptingSpan, AdaptingSpan]):
 
     def _parse_agentops_tool_calls(self, span: Span) -> Optional[Dict[str, Any]]:
         if span.name.startswith("tool_call."):
-            tool_call_data = filter_and_unflatten_attributes(span.attributes, "tool.")
-            if isinstance(tool_call_data, dict) and "call" in tool_call_data:
-                # Example tool_call_data:
-                # {'tool.name': 'get_rooms', 'tool.parameters': '{"date": ...}',
-                #  'tool.call.id': 'call_owd6', 'tool.call.type': 'function'}
-                tool_call_data = {
-                    **tool_call_data["call"],
-                    "function": {k: v for k, v in tool_call_data.items() if k != "call"},
-                }
+            tool_call_data = filter_and_unflatten_attributes(span.attributes, "tool")
+            if isinstance(tool_call_data, dict):
+                if "call" in tool_call_data:
+                    # Example tool_call_data:
+                    # {'tool.name': 'get_rooms', 'tool.parameters': '{"date": ...}',
+                    #  'tool.call.id': 'call_owd6', 'tool.call.type': 'function'}
+                    tool_call_data = {
+                        **tool_call_data["call"],
+                        "function": {k: v for k, v in tool_call_data.items() if k != "call"},
+                    }
+                if (
+                    "function" in tool_call_data
+                    and isinstance(tool_call_data["function"], dict)
+                    and "parameters" in tool_call_data["function"]
+                ):
+                    tool_call_data["function"]["arguments"] = tool_call_data["function"].pop("parameters")  # type: ignore
+
             return cast(Dict[str, Any], tool_call_data)
         return None
 
