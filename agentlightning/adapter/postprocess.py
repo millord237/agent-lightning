@@ -261,7 +261,9 @@ class ToTokensAccumulations(Adapter[Sequence[TokensTriplet], Sequence[TokensAccu
             return [prev, self._triplet_to_accumulation(next, self._diagnose_mismatch(prev, next))]
         tokens_to_add = [*next.observation.token_ids[len(prev.token_ids) :], *next.action.token_ids]
         if prev.logprobs is not None and next.action.logprobs is not None:
-            new_logprobs = list(prev.logprobs) + [0.0] * len(tokens_to_add) + list(next.action.logprobs)
+            # Add zeros only for observation extension tokens, not for action tokens
+            observation_extension_len = len(next.observation.token_ids) - len(prev.token_ids)
+            new_logprobs = list(prev.logprobs) + [0.0] * observation_extension_len + list(next.action.logprobs)
         else:
             new_logprobs = None
         response_mask_to_add = [0] * (len(next.observation.token_ids) - len(prev.token_ids)) + [1] * len(
@@ -337,7 +339,9 @@ class ToPromptCompletionAccumulations(
 
     def _to_messages(self, completion: ChatCompletion) -> List[ChatCompletionAssistantMessageParam]:
         ChatCompletionAssistantMessageParamType = TypeAdapter(ChatCompletionAssistantMessageParam)
-        validated_message = ChatCompletionAssistantMessageParamType.validate_python(completion.choices[0].message)
+        # Convert message to dict first since TypeAdapter expects dict for TypedDict validation
+        message_dict = completion.choices[0].message.model_dump()
+        validated_message = ChatCompletionAssistantMessageParamType.validate_python(message_dict)
         return [to_plain_object(validated_message, [])]
 
     def _to_accumulation(self, triplet: PromptCompletionTriplet) -> PromptCompletionAccumulation:
