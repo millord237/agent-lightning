@@ -28,7 +28,7 @@ from openai.types.chat import (
     ChatCompletionToolUnionParam,
     CompletionCreateParams,
 )
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import Self
 
 from agentlightning.semconv import LinkPydanticModel, RewardPydanticModel
@@ -231,8 +231,7 @@ class AdaptingSpan(Span):
     been converted to a different format by an adapter.
     """
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     data: Any
     """The data in the adapted format. Could be annotations, calls, or other structured data."""
@@ -456,7 +455,7 @@ T_observation = TypeVar("T_observation")
 T_action = TypeVar("T_action")
 
 
-class Triplet(Generic[T_observation, T_action], BaseModel):
+class Triplet(BaseModel, Generic[T_observation, T_action]):
     """A triplet of observation, action and reward."""
 
     observation: T_observation

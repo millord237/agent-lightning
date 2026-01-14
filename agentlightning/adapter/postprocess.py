@@ -30,9 +30,10 @@ if TYPE_CHECKING:
 
 from .base import Adapter
 
+TripletOrAccumulation = Union[TokensTriplet, TokensAccumulation, PromptCompletionTriplet, PromptCompletionAccumulation]
 T_triplet_or_accumulation = TypeVar(
     "T_triplet_or_accumulation",
-    bound=Union[TokensTriplet, TokensAccumulation, PromptCompletionTriplet, PromptCompletionAccumulation],
+    bound=TripletOrAccumulation,
 )
 T_triplet = TypeVar("T_triplet", bound=Union[TokensTriplet, PromptCompletionTriplet])
 
@@ -340,7 +341,8 @@ class ToPromptCompletionAccumulations(
     def _to_messages(self, completion: ChatCompletion) -> List[ChatCompletionAssistantMessageParam]:
         ChatCompletionAssistantMessageParamType = TypeAdapter(ChatCompletionAssistantMessageParam)
         # Convert message to dict first since TypeAdapter expects dict for TypedDict validation
-        message_dict = completion.choices[0].message.model_dump()
+        # Exclude none to avoid issues like tools=None
+        message_dict = completion.choices[0].message.model_dump(exclude_none=True)
         validated_message = ChatCompletionAssistantMessageParamType.validate_python(message_dict)
         return [to_plain_object(validated_message, [])]
 
@@ -391,7 +393,7 @@ class ToPromptCompletionAccumulations(
         return accumulations
 
 
-class PropagateRewards(Adapter[Sequence[T_triplet_or_accumulation], Sequence[T_triplet_or_accumulation]]):
+class PropagateRewards(Adapter[Sequence[TripletOrAccumulation], Sequence[TripletOrAccumulation]]):
     """Propagate rewards forward or backward from one triplet or accumulation to the next."""
 
     def __init__(self, direction: Literal["forward", "backward"]) -> None:

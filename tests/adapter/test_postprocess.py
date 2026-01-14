@@ -3,7 +3,6 @@
 """Tests for the postprocess module adapters."""
 
 from typing import Any, Dict, List, Optional, Sequence
-from unittest.mock import MagicMock
 
 import pytest
 from openai.types.chat import ChatCompletion
@@ -138,7 +137,7 @@ def make_annotated_call(
     if response is None:
         response = make_chat_completion(token_ids=completion_token_ids, logprobs=logprobs)
 
-    annotations = []
+    annotations: List[GeneralAnnotation] = []
     if reward is not None:
         annotations.append(GeneralAnnotation(primary_reward=reward))
 
@@ -811,7 +810,7 @@ def test_to_prompt_completion_accumulations_no_merge_message_mismatch():
 
 def test_to_prompt_completion_accumulations_preserves_tools():
     """Accumulation should preserve tool definitions."""
-    tools = [{"type": "function", "function": {"name": "my_tool", "parameters": {}}}]
+    tools: List[Dict[str, Any]] = [{"type": "function", "function": {"name": "my_tool", "parameters": {}}}]
     request = make_completion_request(tools=tools)
     response = make_chat_completion()
     call = ChatCompletionCall.model_construct(request=request, response=response, malformed_fields={})
@@ -1008,7 +1007,8 @@ def test_propagate_rewards_preserves_existing():
 def test_propagate_rewards_empty_input():
     """Empty input should return empty output."""
     adapter = PropagateRewards(direction="forward")
-    result = adapter.adapt([])
+    triplets: List[TokensTriplet] = []
+    result = adapter.adapt(triplets)
 
     assert len(result) == 0
 
