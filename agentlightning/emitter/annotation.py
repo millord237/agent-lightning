@@ -246,7 +246,9 @@ class OperationContext:
             flattened = flatten_attributes({LightningSpanAttributes.OPERATION_OUTPUT.value: result})
             recording_ctx.record_attributes(sanitize_attributes(flattened))
 
-        if asyncio.iscoroutinefunction(fn) or inspect.iscoroutinefunction(fn):
+        if inspect.iscoroutinefunction(fn) or (
+            hasattr(asyncio, "iscoroutinefunction") and asyncio.iscoroutinefunction(fn)  # type: ignore
+        ):
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
