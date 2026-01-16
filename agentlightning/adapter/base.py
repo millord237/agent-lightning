@@ -5,11 +5,13 @@ from typing import Any, Callable, Generic, Sequence, TypeVar, overload
 from opentelemetry.sdk.trace import ReadableSpan
 
 from agentlightning.types import Span
-from agentlightning.types.adapter import BaseAdaptingSequence
+from agentlightning.types.adapter import BaseAdaptingSequence, BaseAdaptingSequenceItem
 
 T_inv = TypeVar("T_inv")
 T_from = TypeVar("T_from", contravariant=True)
 T_to = TypeVar("T_to", covariant=True)
+T_seq_from = TypeVar("T_seq_from", contravariant=True, bound=BaseAdaptingSequenceItem)
+T_seq_to = TypeVar("T_seq_to", covariant=True, bound=BaseAdaptingSequenceItem)
 
 
 class Adapter(Generic[T_from, T_to]):
@@ -68,17 +70,20 @@ class Adapter(Generic[T_from, T_to]):
         raise NotImplementedError("Adapter.adapt() is not implemented")
 
 
-class SequenceAdapter(Adapter[BaseAdaptingSequence[T_from], BaseAdaptingSequence[T_to]], Generic[T_from, T_to]):
+class SequenceAdapter(
+    Adapter[BaseAdaptingSequence[T_seq_from], BaseAdaptingSequence[T_seq_to]],
+    Generic[T_seq_from, T_seq_to],
+):
     """Base class for adapters that convert adapting sequences of data from one format to another.
 
     This class specializes [`Adapter`][agentlightning.Adapter] for working with
     [`AdaptingSequence`][agentlightning.AdaptingSequence] instances.
     """
 
-    def adapt(self, source: BaseAdaptingSequence[T_from]) -> BaseAdaptingSequence[T_to]:
+    def adapt(self, source: BaseAdaptingSequence[T_seq_from]) -> BaseAdaptingSequence[T_seq_to]:
         return source.map(self.adapt_one)
 
-    def adapt_one(self, source: T_from) -> T_to:
+    def adapt_one(self, source: T_seq_from) -> T_seq_to:
         raise NotImplementedError(f"{self.__class__.__name__}.adapt_one() is not implemented")
 
 
