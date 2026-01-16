@@ -14,7 +14,7 @@ from agentlightning.types.adapter import AdaptingSequence, AdaptingSpan, Tree
 from agentlightning.types.tracer import Span, SpanLike
 from agentlightning.utils.id import generate_id
 
-from .base import Adapter, SequenceAdapter
+from .base import Adapter
 
 T_from = TypeVar("T_from")
 T_to = TypeVar("T_to")
@@ -146,7 +146,7 @@ class _TreeLikeGraph:
         return graph
 
 
-class ToSpans(SequenceAdapter[SpanLike, Span]):
+class ToSpans(Adapter[Sequence[SpanLike], Sequence[Span]]):
     """Normalize span-like objects (e.g., OpenTelemetry `ReadableSpan`) to [Span][agentlightning.Span].
 
     This adapter handles conversion from various span formats to the internal Span type.
@@ -186,6 +186,14 @@ class ToSpans(SequenceAdapter[SpanLike, Span]):
             attempt_id=self.default_attempt_id,
             sequence_id=self.default_sequence_id,
         )
+
+    def adapt(self, source: Sequence[SpanLike]) -> Sequence[Span]:
+        """Convert a sequence of span-like objects to Spans.
+
+        Args:
+            source: A sequence of Span or OpenTelemetry ReadableSpan objects.
+        """
+        return [self.adapt_one(span) for span in source]
 
 
 class ToTree(Adapter[Sequence[Span], Tree[AdaptingSpan]]):
