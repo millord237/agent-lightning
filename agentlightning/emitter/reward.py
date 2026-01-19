@@ -93,7 +93,9 @@ def reward(fn: _FnType) -> _FnType:
 
     # Check if the function is async
     is_async = inspect.iscoroutinefunction(fn) or (
-        hasattr(asyncio, "iscoroutinefunction") and asyncio.iscoroutinefunction(fn)  # type: ignore
+        # For backwards compatibility.
+        hasattr(asyncio, "iscoroutinefunction")
+        and asyncio.iscoroutinefunction(fn)  # type: ignore
     )
 
     if is_async:

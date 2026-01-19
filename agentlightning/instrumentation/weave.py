@@ -425,6 +425,7 @@ class InMemoryWeaveTraceServer(TraceServerClientInterface):
         return tsi.ScoreDeleteRes(num_deleted=0)
 
     # Experimental unstable APIs
+    # We don't support these APIs yet.
     def annotation_queue_create(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError()
 

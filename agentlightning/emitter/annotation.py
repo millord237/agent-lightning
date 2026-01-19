@@ -247,7 +247,9 @@ class OperationContext:
             recording_ctx.record_attributes(sanitize_attributes(flattened))
 
         if inspect.iscoroutinefunction(fn) or (
-            hasattr(asyncio, "iscoroutinefunction") and asyncio.iscoroutinefunction(fn)  # type: ignore
+            # For backwards compatibility.
+            hasattr(asyncio, "iscoroutinefunction")
+            and asyncio.iscoroutinefunction(fn)  # type: ignore
         ):
 
             @functools.wraps(fn)

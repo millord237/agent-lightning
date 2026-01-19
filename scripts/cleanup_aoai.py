@@ -16,6 +16,7 @@ from openai import OpenAI
 
 
 def _client() -> OpenAI:
+    # This script assumes AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are set in the environment.
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
     api_key = os.environ["AZURE_OPENAI_API_KEY"]
     return OpenAI(api_key=api_key, base_url=endpoint)
@@ -42,6 +43,7 @@ def cancel_finetune_job(job_id: str):
 
 
 def delete_finetune_job(job_id: str):
+    # This script assumes AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are set in the environment.
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
     api_key = os.environ["AZURE_OPENAI_API_KEY"]
     root = endpoint.split("/openai")[0]
@@ -59,15 +61,15 @@ if __name__ == "__main__":
     jobs = list_finetune_jobs().data
     files = list_data_files().data
 
-    print("\nJOBS:")
+    print("JOBS:")
     for j in jobs:
         print(f"  {j.id}  {getattr(j, 'status', '')}  {getattr(j, 'model', '')}")
 
-    print("FILES:")
+    print("\nFILES:")
     for f in files:
         print(f"  {f.id}  {getattr(f, 'filename', '')}  {getattr(f, 'status', '')}")
 
-    # Delete them all
+    # Delete them all WITHOUT CONFIRMATION!
     for j in jobs:
         print(f"Deleting job {j.id}")
         try:
