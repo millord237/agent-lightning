@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import warnings
 from contextlib import asynccontextmanager, contextmanager
@@ -122,7 +123,7 @@ class OtelTracer(Tracer):
 
     @with_active_tracer_context
     @asynccontextmanager
-    async def trace_context(
+    async def trace_context(  # kh: runner.step_impl에서 옴
         self,
         name: Optional[str] = None,
         *,
@@ -160,6 +161,7 @@ class OtelTracer(Tracer):
             if store.capabilities.get("otlp_traces", False) is True:
                 logger.debug(f"Tracing to LightningStore rollout_id={rollout_id}, attempt_id={attempt_id}")
                 self._enable_native_otlp_exporter(store, rollout_id, attempt_id)
+                # kh: otlp traces 지원하는 store인 경우, otlp exporter 사용
             else:
                 self._disable_native_otlp_exporter()
             ctx = self._lightning_span_processor.with_context(store=store, rollout_id=rollout_id, attempt_id=attempt_id)
@@ -262,16 +264,33 @@ class OtelTracer(Tracer):
         )
         instrumented = False
         candidates: List[str] = []
+        # kh: processor 별로 조건 check 하는 것임!!
         for processor in active_span_processor._span_processors:  # pyright: ignore[reportPrivateUsage]
             if isinstance(processor, LightningSpanProcessor):
                 # We don't need the LightningSpanProcessor any more.
                 logger.debug("LightningSpanProcessor already present in TracerProvider, disabling it.")
                 processor.disable_store_submission = True
+
+                # kh added
+                logger.debug(f"disable_store_submission set to True for rollout={rollout_id} attempt={attempt_id}")
             elif isinstance(processor, (SimpleSpanProcessor, BatchSpanProcessor)):
                 # Instead, we rely on the OTLPSpanExporter to send spans to the store.
                 if isinstance(processor.span_exporter, LightningStoreOTLPExporter):
-                    processor.span_exporter.enable_store_otlp(store.otlp_traces_endpoint(), rollout_id, attempt_id)
-                    logger.debug(f"Set LightningStoreOTLPExporter endpoint to {store.otlp_traces_endpoint()}")
+                    # option 1
+                    # kh 기존: store로 보낸다는 설정;
+                    # processor.span_exporter.enable_store_otlp(store.otlp_traces_endpoint(), rollout_id, attempt_id)
+                    # logger.debug(f"Set LightningStoreOTLPExporter endpoint to {store.otlp_traces_endpoint()}")
+
+                    # option 2 (hardcoded for collector)
+                    # collector 실험: otel collector로 설정?
+                    # processor.span_exporter.enable_store_otlp("http://localhost:4318/v1/traces", rollout_id, attempt_id)
+                    # logger.info(f"Set LightningStoreOTLPExporter endpoint to http://localhost:4318/v1/traces")
+
+                    # option 3 (switchable via env var)
+                    endpoint = os.getenv("AGL_OTLP_ENDPOINT") or store.otlp_traces_endpoint()
+                    processor.span_exporter.enable_store_otlp(endpoint, rollout_id, attempt_id)
+                    logger.debug(f"[SET] enabling span export to {endpoint} rollout={rollout_id} attempt={attempt_id}")
+
                     instrumented = True
                 else:
                     candidates.append(
@@ -288,6 +307,9 @@ class OtelTracer(Tracer):
             )
 
     def _disable_native_otlp_exporter(self):
+        # kh added
+        # logger.info("disable_store_submission reset to False")
+
         tracer_provider = self._get_tracer_provider()
         active_span_processor = tracer_provider._active_span_processor  # pyright: ignore[reportPrivateUsage]
         tracer_provider._resource = tracer_provider._resource.merge(  # pyright: ignore[reportPrivateUsage]
@@ -480,12 +502,21 @@ class LightningSpanProcessor(SpanProcessor):
         if not span.context or not span.context.trace_flags.sampled:
             return
 
+        # kh: _disable_store_submission 조건에 안 맞아서 안 들어갈 가능성 큼
         if not self._disable_store_submission and self._store and self._rollout_id and self._attempt_id:
             try:
                 # Submit add_otel_span to the event loop and wait for it to complete
                 with suppress_instrumentation():
                     self._ensure_loop()
+
+                    # kh added
+                    # logger.info(
+                    #     "[SET] Exporting spans to STORE; rollout=%s attempt=%s",
+                    #     span.name, self._rollout_id, self._attempt_id
+                    # )
+
                     uploaded_span = self._await_in_loop(
+                        # kh: store에 span 저장 시도 (이건 otlp collector로 보내는 게 아님, store에 직접!)
                         self._store.add_otel_span(self._rollout_id, self._attempt_id, span),
                         timeout=STORE_WRITE_TIMEOUT_SECONDS,
                     )

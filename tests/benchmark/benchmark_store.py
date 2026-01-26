@@ -93,6 +93,8 @@ def make_agent(max_rounds: int, sleep_seconds: float) -> agl.LitAgent[str]:
         rounds = random.randint(1, max_rounds)
         selected_round = random.randint(0, rounds - 1)
 
+        # kh: 각 span이 with block에서 종료되면, otlp SDK가 SpanProcessor.on_end(span) 호출,
+        # kh: 내부적으로 span_exporter.export, 미리 지정한 endpoint(collector)로 span 전송 시도.
         for i in range(rounds):
             with tracer.start_as_current_span(f"agent{i}") as span:
                 # Nested Span
@@ -211,8 +213,11 @@ class AlgorithmBatch(agl.Algorithm):
                         continue
                     if rollout.status != "succeeded":
                         raise RuntimeError(f"Rollout {rollout_id} finished with status {rollout.status}")
-                    spans = await store.query_spans(rollout_id=rollout_id, attempt_id="latest")
-                    check_spans(spans, pending[rollout_id])
+
+                    # kh: Skipping reading from store
+                    # spans = await store.query_spans(rollout_id=rollout_id, attempt_id="latest")
+                    # check_spans(spans, pending[rollout_id])
+
                     completed_ids.add(rollout_id)
                     complete_ids_updated = True
 
@@ -407,6 +412,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 "managed_store": False,
             },
         )
+        # kh: make_agent에서 정의한 agent가 들어감. 그리고 이 agent는 매 rollout 마다 round, span, attribute 생성하고 sleep도 호출.
         trainer.fit(make_agent(max_rounds=args.max_rounds, sleep_seconds=args.sleep_seconds))
     finally:
         timeout_guard.cancel()

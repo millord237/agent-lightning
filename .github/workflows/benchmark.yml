@@ -9,7 +9,7 @@ on:
 
 jobs:
   benchmark:
-    name: ${{ matrix.workload.kind }} (${{ matrix.backend.id }}, ${{ matrix.workload.display }})
+    name: ${{ matrix.workload.kind }} (${{ matrix.backend.id }}, ${{ matrix.workload.display }}, ${{ matrix.trace_sink }})
     runs-on: ${{ matrix.workload.runner }}
     timeout-minutes: ${{ matrix.workload.timeout }}
     strategy:
@@ -18,8 +18,9 @@ jobs:
         backend:
           - id: memory
             compose_file: compose.prometheus-memory-store.yml
-          # - id: mongo
-          #   compose_file: compose.prometheus-mongo-store.yml
+          - id: mongo
+            compose_file: compose.prometheus-mongo-store.yml
+        trace_sink: [store, kafka]
         workload:
           - id: scenario-minimal-scale
             display: Minimal production scale
@@ -180,13 +181,14 @@ jobs:
       WORKLOAD_KIND: ${{ matrix.workload.kind }}
       WORKLOAD_ID: ${{ matrix.workload.id }}
       BACKEND_ID: ${{ matrix.backend.id }}
-      ARTIFACT_DIR: ${{ format('artifacts/{0}-{1}', matrix.workload.id, matrix.backend.id) }}
+      TRACE_SINK_ID: ${{ matrix.trace_sink }}
+      ARTIFACT_DIR: ${{ format('artifacts/{0}-{1}-{2}', matrix.workload.id, matrix.backend.id, matrix.trace_sink) }}
       COMPOSE_FILE: ${{ matrix.backend.compose_file }}
       AGL_STORE_N_WORKERS: ${{ matrix.workload.store_workers }}
-      ANALYSIS_FILE: ${{ format('analysis-{0}.log', matrix.workload.id) }}
-      SUMMARY_FILE: ${{ format('summary-{0}.log', matrix.workload.id) }}
+      ANALYSIS_FILE: ${{ format('analysis-{0}-{1}.log', matrix.workload.id, matrix.trace_sink) }}
+      SUMMARY_FILE: ${{ format('summary-{0}-{1}.log', matrix.workload.id, matrix.trace_sink) }}
       PROM_ARCHIVE_BASENAME: ${{ format('prometheus-{0}-{1}', matrix.workload.id, matrix.backend.id) }}
-      ARTIFACT_NAME: ${{ format('{0}-{1}', matrix.workload.id, matrix.backend.id) }}
+      ARTIFACT_NAME: ${{ format('{0}-{1}-{2}', matrix.workload.id, matrix.backend.id, matrix.trace_sink) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -232,6 +234,91 @@ jobs:
           cd docker && docker compose -f "$COMPOSE_FILE" logs app
           exit 1
 
+
+      - name: Configure trace sink (store vs kafka)
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.trace_sink }}" = "kafka" ]; then
+            echo "AGL_OTLP_ENDPOINT=http://localhost:4318/v1/traces" >> "$GITHUB_ENV"
+          fi
+
+      - name: Launch Kafka + OTel Collector (OTLP -> Kafka)
+        if: ${{ matrix.trace_sink == 'kafka' }}
+        run: |
+          set -euo pipefail
+          cd docker
+
+          # Generate OTel Collector config (OTLP/HTTP receiver -> Kafka exporter)
+          cat > otelcol-kafka.yml <<'YAML'
+          receivers:
+            otlp:
+              protocols:
+                http:
+                  endpoint: 0.0.0.0:4318
+          processors:
+            batch: {}
+          exporters:
+            kafka:
+              brokers: ["kafka:9092"]
+              topic: "agl-otlp-spans"
+              encoding: otlp_proto
+          service:
+            pipelines:
+              traces:
+                receivers: [otlp]
+                processors: [batch]
+                exporters: [kafka]
+          YAML
+
+          # Launch Kafka + Zookeeper + OTel Collector
+          cat > compose.kafka-otel.yml <<'YAML'
+          services:
+            zookeeper:
+              image: confluentinc/cp-zookeeper:7.6.1
+              environment:
+                ZOOKEEPER_CLIENT_PORT: 2181
+                ZOOKEEPER_TICK_TIME: 2000
+
+            kafka:
+              image: confluentinc/cp-kafka:7.6.1
+              depends_on: [zookeeper]
+              environment:
+                KAFKA_BROKER_ID: 1
+                KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+                KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+                KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+                KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+                KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+            otelcol:
+              image: otel/opentelemetry-collector-contrib:latest
+              depends_on: [kafka]
+              command: ["--config=/etc/otelcol/config.yml"]
+              volumes:
+                - ./otelcol-kafka.yml:/etc/otelcol/config.yml:ro
+              ports:
+                - "4318:4318"
+          YAML
+
+          docker compose -p agl-kafka -f compose.kafka-otel.yml down -v || true
+          docker compose -p agl-kafka -f compose.kafka-otel.yml up -d --quiet-pull
+
+          # Create topic (idempotent)
+          docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
+            kafka-topics --bootstrap-server kafka:9092 \
+            --create --if-not-exists \
+            --topic agl-otlp-spans --partitions 3 --replication-factor 1
+
+          # Wait for OTLP/HTTP port to be reachable on the host
+          for attempt in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/4318) >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "OTel Collector port 4318 not reachable in time" >&2
+          docker compose -p agl-kafka -f compose.kafka-otel.yml logs otelcol || true
+          exit 1
       - name: Prepare artifact directory
         run: mkdir -p "$ARTIFACT_DIR"
 
@@ -303,6 +390,28 @@ jobs:
             docker compose -f "$COMPOSE_FILE" logs "$service" > "../$ARTIFACT_DIR/docker-${service}-${WORKLOAD_ID}-${BACKEND_ID}.log" || true
           done
 
+
+      - name: Collect Kafka + OTel Collector logs
+        if: ${{ always() && matrix.trace_sink == 'kafka' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          cd docker
+          if [ -f compose.kafka-otel.yml ]; then
+            for service in zookeeper kafka otelcol; do
+              docker compose -p agl-kafka -f compose.kafka-otel.yml logs "$service" \
+                > "../$ARTIFACT_DIR/docker-kafka-${service}-${WORKLOAD_ID}-${BACKEND_ID}.log" || true
+            done
+          fi
+
+      - name: Stop Kafka + OTel Collector
+        if: ${{ always() && matrix.trace_sink == 'kafka' }}
+        run: |
+          set -euo pipefail
+          cd docker
+          if [ -f compose.kafka-otel.yml ]; then
+            docker compose -p agl-kafka -f compose.kafka-otel.yml down -v || true
+          fi
       - name: Stop ${{ matrix.backend.id }} Prometheus stack
         if: ${{ always() }}
         run: |
