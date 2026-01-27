@@ -20,8 +20,8 @@ jobs:
             compose_file: compose.prometheus-memory-store.yml
           - id: mongo
             compose_file: compose.prometheus-mongo-store.yml
-        # trace_sink: [store, kafka]
-        trace_sink: [kafka]
+        trace_sink: [store, kafka]
+        # trace_sink: [kafka]
         workload:
           - id: scenario-minimal-scale
             display: Minimal production scale
@@ -68,21 +68,21 @@ jobs:
               --n-runners 300
               --max-rounds 6
               --sleep-seconds 0.1
-          # - id: scenario-large-batch
-          #   display: Large batch waves
-          #   kind: scenario
-          #   store_workers: 96
-          #   runner:
-          #     - self-hosted
-          #     - 1ES.Pool=agl-runner-cpu-high
-          #   timeout: 120
-          #   args: >-
-          #     --mode batch
-          #     --total-tasks 50000
-          #     --batch-size 8192
-          #     --n-runners 1000
-          #     --max-rounds 3
-          #     --sleep-seconds 0.1
+          - id: scenario-large-batch
+            display: Large batch waves
+            kind: scenario
+            store_workers: 96
+            runner:
+              - self-hosted
+              - 1ES.Pool=agl-runner-cpu-high
+            timeout: 120
+            args: >-
+              --mode batch
+              --total-tasks 50000
+              --batch-size 8192
+              --n-runners 1000
+              --max-rounds 3
+              --sleep-seconds 0.1
           - id: scenario-long-queues
             display: Long rollout queues
             kind: scenario
@@ -99,37 +99,37 @@ jobs:
               --remaining-tasks 4096
               --max-rounds 4
               --sleep-seconds 0.1
-          # - id: scenario-high-concurrency
-          #   display: High-throughput concurrent requests
-          #   kind: scenario
-          #   store_workers: 96
-          #   runner:
-          #     - self-hosted
-          #     - 1ES.Pool=agl-runner-cpu-high
-          #   timeout: 120
-          #   args: >-
-          #     --mode single
-          #     --total-tasks 50000
-          #     --concurrency 2048
-          #     --n-runners 256
-          #     --max-rounds 2
-          #     --sleep-seconds 0.1
-          # - id: scenario-heavy-traces
-          #   display: Heavy rollouts with deep traces
-          #   kind: scenario
-          #   store_workers: 96
-          #   runner:
-          #     - self-hosted
-          #     - 1ES.Pool=agl-runner-cpu-high
-          #   timeout: 60
-          #   args: >-
-          #     --mode batch_partial
-          #     --total-tasks 10000
-          #     --batch-size 1024
-          #     --remaining-tasks 256
-          #     --n-runners 512
-          #     --max-rounds 20
-          #     --sleep-seconds 1.0
+          - id: scenario-high-concurrency
+            display: High-throughput concurrent requests
+            kind: scenario
+            store_workers: 96
+            runner:
+              - self-hosted
+              - 1ES.Pool=agl-runner-cpu-high
+            timeout: 120
+            args: >-
+              --mode single
+              --total-tasks 50000
+              --concurrency 2048
+              --n-runners 256
+              --max-rounds 2
+              --sleep-seconds 0.1
+          - id: scenario-heavy-traces
+            display: Heavy rollouts with deep traces
+            kind: scenario
+            store_workers: 96
+            runner:
+              - self-hosted
+              - 1ES.Pool=agl-runner-cpu-high
+            timeout: 60
+            args: >-
+              --mode batch_partial
+              --total-tasks 10000
+              --batch-size 1024
+              --remaining-tasks 256
+              --n-runners 512
+              --max-rounds 20
+              --sleep-seconds 1.0
 
           # - id: micro-worker
           #   display: Update worker
@@ -298,10 +298,10 @@ jobs:
             otelcol:
               image: otel/opentelemetry-collector-contrib:latest
               depends_on: [kafka]
-              # command: ["--config=/etc/otelcol/config.yml"]
-              command:
-                - "--config=/etc/otelcol/config.yml"
-                - "--set=service.telemetry.logs.level=debug"
+              command: ["--config=/etc/otelcol/config.yml"]
+              # command:
+              #   - "--config=/etc/otelcol/config.yml"
+              #   - "--set=service.telemetry.logs.level=debug"
               volumes:
                 - ./otelcol-kafka.yml:/etc/otelcol/config.yml:ro
               ports:
