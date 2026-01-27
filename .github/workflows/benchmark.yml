@@ -330,6 +330,20 @@ jobs:
       - name: Prepare artifact directory
         run: mkdir -p "$ARTIFACT_DIR"
 
+      - name: Kafka topic offsets (before workload)
+        if: ${{ matrix.trace_sink == 'kafka' }}
+        run: |
+          set -euo pipefail
+          cd docker
+          # Print offsets for common topic spellings; at least one should exist.
+          {
+            echo "== Kafka offsets BEFORE workload =="
+            docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
+              kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl_otlp_spans 2>/dev/null || true
+            docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
+              kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl-otlp-spans 2>/dev/null || true
+          } | tee "$GITHUB_WORKSPACE/$ARTIFACT_DIR/kafka-offsets-before.txt"
+
       - name: Record workload start
         run: echo "BENCHMARK_START=$(date -u +%FT%TZ)" >> "$GITHUB_ENV"
 
@@ -354,6 +368,19 @@ jobs:
       - name: Record workload end
         if: ${{ always() }}
         run: echo "BENCHMARK_END=$(date -u +%FT%TZ)" >> "$GITHUB_ENV"
+
+      - name: Kafka topic offsets (after workload)
+        if: ${{ always() && matrix.trace_sink == 'kafka' }}
+        run: |
+          set -euo pipefail
+          cd docker
+          {
+            echo "== Kafka offsets AFTER workload =="
+            docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
+              kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl_otlp_spans 2>/dev/null || true
+            docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
+              kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl-otlp-spans 2>/dev/null || true
+          } | tee "$GITHUB_WORKSPACE/$ARTIFACT_DIR/kafka-offsets-after.txt"
 
       - name: Show micro benchmark summary
         if: ${{ always() && matrix.workload.kind == 'micro' }}
