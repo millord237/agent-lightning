@@ -38,21 +38,21 @@ jobs:
               --n-runners 32
               --max-rounds 6
               --sleep-seconds 0.5
-          - id: scenario-medium-scale
-            display: Medium production scale
-            kind: scenario
-            store_workers: 16
-            runner:
-              - self-hosted
-              - 1ES.Pool=agl-runner-cpu
-            timeout: 45
-            args: >-
-              --mode batch
-              --total-tasks 10000
-              --batch-size 1000
-              --n-runners 100
-              --max-rounds 10
-              --sleep-seconds 0.1
+          # - id: scenario-medium-scale
+          #   display: Medium production scale
+          #   kind: scenario
+          #   store_workers: 16
+          #   runner:
+          #     - self-hosted
+          #     - 1ES.Pool=agl-runner-cpu
+          #   timeout: 45
+          #   args: >-
+          #     --mode batch
+          #     --total-tasks 10000
+          #     --batch-size 1000
+          #     --n-runners 100
+          #     --max-rounds 10
+          #     --sleep-seconds 0.1
           - id: scenario-midhigh-scale
             display: Mid-high production scale
             kind: scenario
@@ -290,6 +290,7 @@ jobs:
                 KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
                 KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
                 KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+                # Enlarge max message size to accommodate large spans
                 KAFKA_MESSAGE_MAX_BYTES: "10000000"
                 KAFKA_REPLICA_FETCH_MAX_BYTES: "10000000"
                 KAFKA_SOCKET_REQUEST_MAX_BYTES: "10000000"
@@ -297,7 +298,10 @@ jobs:
             otelcol:
               image: otel/opentelemetry-collector-contrib:latest
               depends_on: [kafka]
-              command: ["--config=/etc/otelcol/config.yml"]
+              # command: ["--config=/etc/otelcol/config.yml"]
+              command:
+                - "--config=/etc/otelcol/config.yaml"
+                - "--set=service.telemetry.logs.level=debug"
               volumes:
                 - ./otelcol-kafka.yml:/etc/otelcol/config.yml:ro
               ports:
