@@ -38,21 +38,21 @@ jobs:
               --n-runners 32
               --max-rounds 6
               --sleep-seconds 0.5
-          # - id: scenario-medium-scale
-          #   display: Medium production scale
-          #   kind: scenario
-          #   store_workers: 16
-          #   runner:
-          #     - self-hosted
-          #     - 1ES.Pool=agl-runner-cpu
-          #   timeout: 45
-          #   args: >-
-          #     --mode batch
-          #     --total-tasks 10000
-          #     --batch-size 1000
-          #     --n-runners 100
-          #     --max-rounds 10
-          #     --sleep-seconds 0.1
+          - id: scenario-medium-scale
+            display: Medium production scale
+            kind: scenario
+            store_workers: 16
+            runner:
+              - self-hosted
+              - 1ES.Pool=agl-runner-cpu
+            timeout: 45
+            args: >-
+              --mode batch
+              --total-tasks 10000
+              --batch-size 1000
+              --n-runners 100
+              --max-rounds 10
+              --sleep-seconds 0.1
           - id: scenario-midhigh-scale
             display: Mid-high production scale
             kind: scenario
@@ -300,7 +300,7 @@ jobs:
               depends_on: [kafka]
               # command: ["--config=/etc/otelcol/config.yml"]
               command:
-                - "--config=/etc/otelcol/config.yaml"
+                - "--config=/etc/otelcol/config.yml"
                 - "--set=service.telemetry.logs.level=debug"
               volumes:
                 - ./otelcol-kafka.yml:/etc/otelcol/config.yml:ro
