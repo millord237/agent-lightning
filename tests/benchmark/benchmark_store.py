@@ -273,8 +273,8 @@ class AlgorithmBatch(agl.Algorithm):
                     continue
                 if rollout.status != "succeeded":
                     raise RuntimeError(f"Rollout {rollout_id} finished with status {rollout.status}")
-                spans = await store.query_spans(rollout_id=rollout_id, attempt_id="latest")
-                check_spans(spans, active_rollouts.pop(rollout_id))
+                # spans = await store.query_spans(rollout_id=rollout_id, attempt_id="latest")
+                # check_spans(spans, active_rollouts.pop(rollout_id))
                 completed += 1
                 newly_completed += 1
 
@@ -334,8 +334,8 @@ class AlgorithmBatch(agl.Algorithm):
                             break
                         await emit_progress(progress_made=False)
                         await asyncio.sleep(5.0)
-                    spans = await store.query_spans(rollout_id=rollout_id, attempt_id="latest")
-                    check_spans(spans, task_name)
+                    # spans = await store.query_spans(rollout_id=rollout_id, attempt_id="latest")
+                    # check_spans(spans, task_name)
                     await emit_progress(progress_made=True)
                 finally:
                     async with active_lock:

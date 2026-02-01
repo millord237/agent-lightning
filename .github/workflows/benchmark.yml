@@ -20,8 +20,8 @@ jobs:
             compose_file: compose.prometheus-memory-store.yml
           - id: mongo
             compose_file: compose.prometheus-mongo-store.yml
-        trace_sink: [store, kafka]
-        # trace_sink: [kafka]
+        # trace_sink: [store, kafka]
+        trace_sink: [kafka]
         workload:
           - id: scenario-minimal-scale
             display: Minimal production scale
@@ -338,8 +338,8 @@ jobs:
           # Print offsets for common topic spellings; at least one should exist.
           {
             echo "== Kafka offsets BEFORE workload =="
-            docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
-              kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl_otlp_spans 2>/dev/null || true
+            # docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
+            #   kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl_otlp_spans 2>/dev/null || true
             docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
               kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl-otlp-spans 2>/dev/null || true
           } | tee "$GITHUB_WORKSPACE/$ARTIFACT_DIR/kafka-offsets-before.txt"
@@ -376,8 +376,8 @@ jobs:
           cd docker
           {
             echo "== Kafka offsets AFTER workload =="
-            docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
-              kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl_otlp_spans 2>/dev/null || true
+            # docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
+            #   kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl_otlp_spans 2>/dev/null || true
             docker compose -p agl-kafka -f compose.kafka-otel.yml exec -T kafka \
               kafka-run-class kafka.tools.GetOffsetShell --broker-list kafka:9092 --topic agl-otlp-spans 2>/dev/null || true
           } | tee "$GITHUB_WORKSPACE/$ARTIFACT_DIR/kafka-offsets-after.txt"
